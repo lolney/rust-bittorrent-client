@@ -4,6 +4,6 @@ version = "0.1.0"
 authors = ["Luke Olney <LukeOlney2016@u.northwestern.edu>"]
 
 [dependencies]
-peg = "0.3.0"
 chomp = "0.3.1"
 nom = "^1.2.4"
+byteorder = "^1.0.0"

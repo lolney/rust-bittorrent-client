@@ -1,21 +1,6 @@
 use std::vec::Vec;
 
 /*
-#[derive(PartialEq, Debug)]
-pub struct Kvpair {
-    key: String,
-    value: BencodeT,
-}
-
-#[derive(PartialEq, Debug)]
-pub enum BencodeT {
-	String {v : String},
-	Integer {v : i64},
-	Dictionary {v : Vec<Kvpair>},
-	List {v: Vec<BencodeT>},
-}*/
-
-/*
 Does not work - parsing expression grammar is unable to express
 the grammar for strings
 */

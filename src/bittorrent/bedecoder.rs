@@ -1,34 +1,330 @@
-use nom::*;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
 
-use std::result::Result;
-use std::str;
-use std::str::FromStr;
+#[derive(PartialEq, Debug)]
+pub struct Kvpair {
+    key: String,
+    value: BencodeT,
+}
 
-fn parse(o : &[u8]) -> Result<u64, u64> {
-	match str::from_utf8(o) {
-		Ok(v) => Ok(90u64),
-		Err(v) => Ok(90u64),
+#[derive(PartialEq, Debug, Clone)]
+pub enum BencodeT {
+	String(String),
+	Integer(i64),
+	Dictionary(HashMap<String, BencodeT>),
+	List(Vec<BencodeT>),
+}
+/*
+#[derive(Debug)]
+struct ParseError;
+
+impl Error for ParseError {
+    fn description(&self) -> &str {
+        "Something bad happened"
+    }
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Oh no, something bad went down")
+    }
+}*/
+
+
+/// # Arguments
+/// # * `inbytes` - bencoded data
+pub fn parse(inbytes : &[u8]) -> Result<BencodeT,String> {
+    let (r, _) = _parse(inbytes, 0);
+    return r;
+}
+
+/// # Arguments
+/// # * `inbytes` - bencoded data
+fn _parse(inbytes : &[u8], i : usize) -> (Result<BencodeT,String>, usize) {
+    match inbytes[i] as char {
+        'i' => parseInt(inbytes, i+1),
+        'l'  => parseList(inbytes, i+1),
+        'd' => parseDic(inbytes, i+1),
+        '0' ... '9' => parseStr(inbytes, i),
+        _ => (Err(format!("Incorrect format at {:?} in {:?}", i, inbytes)), 0)
+    }
+}
+
+/// # Arguments
+/// # * `inbytes` - bencoded data
+/// # * `i` - index where the bencoded i64 integer begins, discluding leading 'i'
+fn parseInt(inbytes : &[u8], i : usize) -> (Result<BencodeT,String>, usize) {
+    let mut j = i;
+    while true {
+        if j >= inbytes.len() {
+            return (Err(String::from("Incorrect format; exceeded buffer length")), j);
+        }
+        if inbytes[j] as char == 'e' {
+            if j == i {return (Err(String::from("Empty integer")), j)}
+            break;
+        }
+        let allowed = match inbytes[j] as char {
+            '-' => if j == i {true} else {false},
+            '0' ... '9' => true,
+            _ => false,
+        };
+        if !allowed {
+            return (Err(format!("Expected int; found character {:?}", inbytes[j] as char)), j);
+        }
+        j=j+1;
+    }
+    // Overflows with > max i32
+    let int = ascii_utf8_to_i64(&inbytes[i..j]);
+    (Ok(BencodeT::Integer(int)), j+1)
+}
+
+fn parseList(inbytes : &[u8], i : usize) -> (Result<BencodeT,String>, usize) {
+    let mut j = i;
+    let mut vec : Vec<BencodeT> = Vec::new();
+    while true {
+        if j >= inbytes.len() {
+            return (Err(String::from("Incorrect format; exceeded buffer length")), j);
+        }
+        if inbytes[j] as char == 'e' {break;}
+        let (res, newj) = _parse(inbytes, j);
+        j = newj;
+        match res {
+            Ok(bt) => {vec.push(bt);},
+            Err(error) => {return (Err(error), j);},
+        }
+    }
+
+    let l = BencodeT::List(vec);
+    (Ok(l), j+1)
+}
+
+fn parseDic(inbytes : &[u8], i : usize) -> (Result<BencodeT,String>, usize) {
+    let mut j = i;
+    let mut hm = HashMap::new();
+    while true {
+        if j >= inbytes.len() {
+            return (Err(String::from("Incorrect format; exceeded buffer length")), j);
+        }
+        if inbytes[j] as char == 'e' {break;}
+
+        let (b1, j2) = _parse(inbytes, j);
+        let mut key = String::from("");
+        match b1 {
+            Ok(b) => match b {
+                BencodeT::String(v) => {key = v;},
+                _ => {return (Err(String::from("Non-string type as key")),j)}
+            },
+            Err(error) => {return (Err(error), j);},
+        };
+
+        let (b2, j3) = _parse(inbytes, j2);
+        j = j3;
+        let value = match b2 {
+            Ok(b) => b,
+            Err(error) => {return (Err(error), j);},
+        };
+
+        hm.insert(key, value);
+    }
+    
+    (Ok(BencodeT::Dictionary(hm)), j+1)
+}
+
+fn isDigit(d : u8) -> bool {
+	match d as char{
+		'0' ... '9' => true,
+		_ => false
 	}
 }
 
-named!(string_tag(&[u8]) -> u64,
-	map_res!(
-		preceded!(tag!(":"),
-			take_while!(is_digit)),
-	parse));
+fn parse_i64(instring : String) -> Result<i64, String> {
+    let mut string = instring;
+    let mut negative = false;
+    if string.chars().next().unwrap() == '-' {
+        string = string.split_off(1);
+        negative = true;
+    }
 
-#[test]
-fn string_tag_test() {
-	assert_eq!(string_tag(&b":100"[..]), IResult::Done(&b""[..], 78));
+    if string.len() > 19 {return Err(format!("Overflow: {:?}", string));}
+    else if string.len() == 19 {
+        for (d1, d2) in String::from("9223372036854775807").chars().zip(string.chars()) {
+            if d1 > d2 {return Err(format!("Overflow: {:?}", string));}
+            if d1 < d2 {break;}
+        }
+    }
+    let mut total : i64 = 0;
+    let ten : i64 = 10;
+    for (i, item) in string.chars().rev().enumerate(){
+        let digit : i64 = item.to_digit(10).unwrap() as i64;
+        let j : u32 = i as u32;
+        total =  digit * ten.pow(j) + total;
+    }
+
+    if negative {total = total * -1}
+    Ok(total)
 }
 
-fn my_function(input: &[u8]) -> IResult<&[u8], &[u8]> {
-  tag!(input, "1")
+/// # Arguments
+/// # * `buffer` - ascii bytes
+/// # Returns
+/// # bytes intrepreted as an unsigned integer
+fn ascii_utf8_to_usize(buffer : &[u8]) -> usize {
+	let as_string = utf8_to_string(buffer);
+    return as_string.parse::<usize>().unwrap();
 }
 
-// fn parser(input: I) -> IResult<I, O>; <- parsers are of this form 
-// Combinators take parsers as input
-#[test]
-fn test() {
-    assert_eq!(my_function(&b"10000"[..]),IResult::Done(&b"0000"[..],&b"1"[..]));;
+// No std library support for generic integers
+fn ascii_utf8_to_i64(buffer : &[u8]) -> i64 {
+    let as_string = utf8_to_string(buffer);
+    return parse_i64(as_string).unwrap();
 }
+
+fn utf8_to_string(bytes: &[u8]) -> String {
+    let vector: Vec<u8> = Vec::from(bytes);
+    return String::from_utf8(vector).unwrap();
+}
+
+fn parseStr(inbytes : &[u8], i : usize) -> (Result<BencodeT,String>, usize) {
+	let mut j = i;
+	while isDigit(inbytes[j]){
+        j=j+1;
+    }
+	if inbytes[j] as char != ':' {
+		return (Err(format!("Incorrect format whilte parsing string: at {:?} in {:?}", j, inbytes)), j);
+	}
+    // TODO: error handling for size larger than usize
+	let l : usize = ascii_utf8_to_usize(&inbytes[i..j]);
+	j=j+1;
+	let string = utf8_to_string(&inbytes[j..j+l]);
+	(Ok(BencodeT::String(string)), j+l)
+}
+
+
+
+    fn create_strings() -> (Vec<&'static str>, Vec<BencodeT>){
+        let strings = vec!["5:abcde","26:abcdefghijklmnopQRSTUVWxyz"];
+        let bstrings = vec![
+            BencodeT::String("abcde".to_string()),
+            BencodeT::String("abcdefghijklmnopQRSTUVWxyz".to_string())];
+        (strings, bstrings)
+    }
+    
+    #[test]
+    fn strings(){
+        assert_eq!(parse("5:abcde".as_bytes()).unwrap(),
+            BencodeT::String("abcde".to_string()));
+        assert_eq!(parse("26:abcdefghijklmnopQRSTUVWxyz".as_bytes()).unwrap(),
+            BencodeT::String("abcdefghijklmnopQRSTUVWxyz".to_string()));
+    }
+
+    #[test]
+    // TODO: larger than i64
+    fn digits_basic(){
+        assert_eq!(parse("i3e".as_bytes()).unwrap(),
+            BencodeT::Integer(3));
+        assert_eq!(parse("i-3e".as_bytes()).unwrap(),
+            BencodeT::Integer(-3));
+    }
+
+    #[test]
+    fn digits_errors(){
+        assert_eq!(parse("i333333".as_bytes()),
+            Err(String::from("Incorrect format; exceeded buffer length")));
+        assert_eq!(parse("i3-3e".as_bytes()),
+            Err(format!("Expected int; found character {:?}", '-' as char)));
+        assert_eq!(parse("i7373777788888989898989899898ae".as_bytes()),
+            Err(format!("Expected int; found character {:?}", 'a')));
+    }
+
+    #[test]
+    fn digits_maxi64(){
+        assert_eq!(parse("i9223372036854775807e".as_bytes()).unwrap(),
+            BencodeT::Integer(9223372036854775807));
+    }
+
+    #[test]
+    fn digits_maxi32(){
+        assert_eq!(parse("i2147483649e".as_bytes()).unwrap(),
+            BencodeT::Integer(2147483649));
+        assert_eq!(parse("i2147483647e".as_bytes()).unwrap(),
+            BencodeT::Integer(2147483647));
+    }
+
+    #[test]
+    fn list_errors(){
+        assert_eq!(parse("li3e".as_bytes()),
+            Err(String::from("Incorrect format; exceeded buffer length")));
+    }
+
+    #[test]
+    fn lists(){
+        let l1 = BencodeT::List(Vec::new());
+        assert_eq!(parse("le".as_bytes()).unwrap(), l1);
+        
+        let bi = BencodeT::Integer(1234);
+        let l2 = BencodeT::List(vec![bi]);
+        assert_eq!(parse("li1234ee".as_bytes()).unwrap(), l2);
+        
+        let mut v = Vec::new();
+        let mut s = String::from("l");
+        for i in 1..100 {
+            let bi = BencodeT::Integer(i);
+            s.push('i');
+            s.push_str(i.to_string().as_str());
+            s.push('e');
+            v.push(bi);
+        }
+        s.push('e');
+        let l3 = BencodeT::List(v);
+        assert_eq!(parse(s.as_bytes()).unwrap(), l3);
+
+        let l4 = BencodeT::List(vec![l1, l2]);
+    }
+
+    fn calculate_hash<T: Hash>(t: &T) -> String {
+        let mut s = DefaultHasher::new();
+        t.hash(&mut s);
+        s.finish().to_string()
+    }
+
+    fn format_bstring(string : String) -> String {
+        let mut outstring = String::from(string.len().to_string());
+        outstring.push(':');
+        outstring.push_str(string.as_str());
+        return outstring;
+    }
+
+    fn create_dictionary(keys : Vec<&'static str>, values : Vec<BencodeT>) ->
+    (String, BencodeT)
+    {
+        let mut hm = HashMap::new();
+        let mut dictstring = String::from("d");
+        for (key, value) in keys.iter().zip(values.iter()) {
+            let hash = format_bstring(calculate_hash(&key));
+            dictstring.push_str(hash.as_str());
+            dictstring.push_str(key); // keys are the formatted version of the Bencoded objects
+            hm.insert(calculate_hash(&key), value.clone());
+        }
+        dictstring.push('e');
+
+        let bdict = BencodeT::Dictionary(hm);
+        (dictstring, bdict)
+    }
+
+    #[test]
+    fn dictionaries(){
+        let (strings, bstrings) = create_strings();
+        let (dictstring, bdict) = create_dictionary(strings, bstrings);
+        assert_eq!(parse(dictstring.as_bytes()).unwrap(), bdict);
+
+        /*
+        let mut keys = Vec::new();
+        let mut values = Vec::new();
+        for i in 1..10 {
+            keys.push(dictstring.as_str());
+            values.push(bdict);
+        }
+        let (dictstring, bdict) = create_dictionary(keys, values);
+        assert_eq!(parse(dictstring.as_bytes()).unwrap(), bdict);*/
+    }
