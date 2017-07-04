@@ -1,90 +1,93 @@
-use std::vec::Vec;
+use std::collections::HashMap;
+use bittorrent::BencodeT; 
+use bittorrent::utils::{create_strings, create_ints};
 
-/*
-Does not work - parsing expression grammar is unable to express
-the grammar for strings
-*/
-/*
-peg! bencode(r#"
-use bittorrent::bencoder::BencodeT;
-use bittorrent::bencoder::Kvpair;
-use std::str::FromStr;
+pub fn encode(bencobj : &BencodeT) -> String {
+    match bencobj {
+        &BencodeT::String(ref string) => encode_string(string.as_str()),
+        &BencodeT::Integer(int) => encode_int(int),
+        &BencodeT::Dictionary(ref hm) => encode_dic(&hm),
+        &BencodeT::List(ref vec) => encode_list(&vec),
+    }
+}
 
-#[pub]
-expressions -> Vec<BencodeT>
-	= expression+
+fn encode_string(instring : &str) -> String {
+    let mut outstring = String::from(instring.len().to_string());
+    outstring.push(':');
+    outstring.push_str(instring);
+    return outstring;
+}
 
-#[pub]
-expression -> BencodeT
-	= list/dictionary
-	/ i:integer { BencodeT::Integer{v : i} }
-	/ s:string { BencodeT::String{v : s} }
+fn encode_int(int : i64) -> String {
+    let mut outstring = String::from("i");
+    outstring.push_str(int.to_string().as_str());
+    outstring.push('e');
+    return outstring;
+}
 
-string -> String
-	= ":" strlen:uint s:.+ 
-	{?
-		let floatl = (strlen as f64) + 1.0;
-		let numlen = floatl.log10().ceil() as usize;
+fn encode_dic(hm : &HashMap<String, BencodeT>) -> String {
+    let mut outstring = String::from("d");
+    for (key, value) in hm.iter() {
+        outstring.push_str(encode_string(key).as_str());
+        outstring.push_str(encode(value).as_str());
+    }
+    outstring.push('e');
+    return outstring;
+}
 
-		if strlen != (pos - start_pos - numlen - 1){
-			Err("Reported length does not match string length")
-		}
-		else{
-			let start = start_pos + 1 + numlen;
-			Ok(match_str[start .. start+strlen].to_string())
-		}
-	}
-
-integer -> i64
-	= "i" "-"?[0-9]+ "e" {match_str[start_pos+1 .. pos].parse().unwrap()}
-
-uint -> usize
-	= [1-9][0-9]* {usize::from_str(match_str).unwrap()}
-
-list -> BencodeT
-	= "l" l:(expression+) "e" { BencodeT::List{v : l} }
-
-dictionary -> BencodeT
-	= "d" d:dictionary_elem+ "e" { BencodeT::Dictionary{v : d} }
-
-dictionary_elem -> Kvpair
-	= k:string v:expression {Kvpair{key:k, value:v}}
-"#);
- */
-
- /*
-#[test]
-fn strings() {
-	assert_eq!(bencode::expression(":1p"),
-	 Ok(BencodeT::String{v :String::from("p")}));
-	assert_eq!(bencode::expression(":8aodfjdoi"),
-	 Ok(BencodeT::String{v :String::from("aodfjdoi")}));
-
-	assert_eq!(bencode::expressions(":1p:2d::4ffef"),
-	 Ok(vec!(
-	 	BencodeT::String{v :String::from("p")},
-	 	BencodeT::String{v :String::from("d:")},
-	 	BencodeT::String{v :String::from("ffef")})));
-
-	assert!(bencode::expression(":11aodfjdoi").is_err());
+fn encode_list(vec : &Vec<BencodeT>) -> String {
+    let mut outstring = String::from("l");
+    for elem in vec {
+        outstring.push_str(encode(elem).as_str());
+    }
+    outstring.push('e');
+    return outstring;
 }
 
 #[test]
-fn dictionaries() {
-	assert_eq!(bencode::expression("d:1o:1oe"),
-		Ok(BencodeT::Dictionary{
-			v : vec!(
-				Kvpair{key: String::from("o"),
-					value: BencodeT::String{v :String::from("o")}})
-		}));
+fn strings(){
+    let (strings, bstrings) = create_strings();
+    for (bstring, string) in bstrings.iter().zip(strings) {
+        assert_eq!(string, encode(bstring));
+    }
 }
 
 #[test]
-fn lists() {
-	assert_eq!(bencode::expression("l:1o:1oe"),
-		Ok(BencodeT::List{
-			v : vec!(BencodeT::String{v :String::from("o")},
-						BencodeT::String{v :String::from("o")})
-		}));
+fn ints(){
+    let (strings, ints) = create_ints();
+    for (int, string) in ints.iter().zip(strings) {
+        assert_eq!(string, encode(int));
+    }
 }
- */
+
+#[test]
+fn lists(){
+    let (sstrings, sbencoded) = create_strings();
+    let (istrings, ibencoded) = create_ints();
+    let list = BencodeT::List(sbencoded.clone());
+    assert_eq!(encode_list(&sbencoded), encode(&list));
+
+    let string = "li1ei2ei3ee";
+    let list = BencodeT::List(vec![1,2,3].into_iter().map(|i| BencodeT::Integer(i)).collect());
+    assert_eq!(string, encode(&list));
+}
+
+#[test]
+fn dics(){
+    let (sstrings, sbencoded) = create_strings();
+    let (istrings, ibencoded) = create_ints();
+    let mut hm = HashMap::new();
+    for (i, sb) in sbencoded.iter().enumerate() {
+        hm.insert(i.to_string(), sb.clone());
+    }
+    let bhm = BencodeT::Dictionary(hm.clone());
+    assert_eq!(encode_dic(&hm), encode(&bhm));
+
+    let string = "d1:gd1:ei8e1:fi9eee";
+    let mut dic1 = HashMap::new();
+    dic1.insert(String::from("e"),BencodeT::Integer(8));
+    dic1.insert(String::from("f"),BencodeT::Integer(9));
+    let mut dic2 = HashMap::new();
+    dic2.insert(String::from("g"),BencodeT::Dictionary(dic1));
+    assert_eq!(string, encode(&BencodeT::Dictionary(dic2)));
+}
