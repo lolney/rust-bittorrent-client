@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap,BTreeMap};
 use bittorrent::BencodeT; 
 use bittorrent::utils::{create_strings, create_ints};
 
@@ -27,7 +27,8 @@ fn encode_int(int : i64) -> String {
 
 fn encode_dic(hm : &HashMap<String, BencodeT>) -> String {
     let mut outstring = String::from("d");
-    for (key, value) in hm.iter() {
+    let ordered : BTreeMap<_,_> = hm.iter().collect();
+    for (key, value) in ordered.iter() {
         outstring.push_str(encode_string(key).as_str());
         outstring.push_str(encode(value).as_str());
     }
