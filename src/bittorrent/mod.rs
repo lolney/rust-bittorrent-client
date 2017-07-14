@@ -38,3 +38,15 @@ impl Bencodable for i64 {
 impl Bencodable for i32 {
     fn to_BencodeT(self) -> BencodeT {BencodeT::Integer(self as i64)}
 }
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct Piece {
+    index : u32,
+    begin : u32,
+    length : u32,
+}
+
+pub struct PieceData<'a>{
+    piece : Piece,
+    data : & 'a[u8],
+}

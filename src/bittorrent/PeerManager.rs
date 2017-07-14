@@ -1,7 +1,9 @@
 extern crate core;
 
-use bittorent::Peer;
+use bittorent::{Peer, Action};
 use priority_queue::PriorityQueue;
+
+
 
 struct PeerManager {
     peers : PriorityQueue<Peer, i32>

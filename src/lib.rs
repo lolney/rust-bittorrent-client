@@ -5,5 +5,6 @@
 #[macro_use]
 extern crate nom;
 extern crate byteorder;
+extern crate bit_vec;
 
 mod bittorrent;
