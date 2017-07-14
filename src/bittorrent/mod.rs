@@ -46,6 +46,7 @@ pub struct Piece {
     length : u32,
 }
 
+#[derive(PartialEq, Debug, Clone)]
 pub struct PieceData<'a>{
     piece : Piece,
     data : & 'a[u8],

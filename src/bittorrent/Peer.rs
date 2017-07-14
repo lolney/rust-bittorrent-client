@@ -17,8 +17,9 @@ pub struct Peer {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum Action {
-    Write(Vec<Piece>),
+pub enum Action<'a> {
+    Request(Vec<Piece>),
+    Write(PieceData<'a>),
     None,
 }
 
@@ -28,6 +29,7 @@ const QUEUE_LENGTH : usize = 5;
 /// Outsources actual networking
 impl Peer {
 
+    // TODO: errors for lengths larger than the allowed size
     pub fn new(info : PeerInfo) -> Peer {
         Peer{
             am_choking: true,
@@ -41,7 +43,7 @@ impl Peer {
         }
     }
 
-    fn parse_message(&mut self, msg : &[u8]) -> Result<Action,&'static str> {
+    fn parse_message<'a>(&mut self, msg : &'a [u8]) -> Result<Action<'a>,&'static str> {
         self.time = 0;
         let len : u32 = BigEndian::read_u32(&msg[0 .. 4]); // parse u32
         if len == 0 {Ok(Action::None)} // keep alive
@@ -55,9 +57,9 @@ impl Peer {
                 3 => self.parse_interested(false),
                 4 => self.parse_have(BigEndian::read_u32(&msg[5 .. 9])),
                 5 => self.parse_bitfield(&msg[5 .. 5 + len as usize - 1]),
-                6 => self.parse_request(&msg),
-                7 => self.parse_piece(),
-                8 => self.parse_cancel(),
+                6 => self.parse_request(msg),
+                7 => self.parse_piece(msg, len + 4),
+                8 => self.parse_cancel(msg),
                 9 => self.parse_port(),
                 _ => Err("Invalid message id")
             }
@@ -74,17 +76,17 @@ impl Peer {
     // can implement as a manager with a priority queue
     // Sleep until longest-lived peer expires, then delete
 
-    fn parse_choke(&mut self, choke : bool) -> Result<Action,&'static str> {
+    fn parse_choke<'a>(&mut self, choke : bool) -> Result<Action<'a>,&'static str> {
         self.peer_choking = choke;
         Ok(Action::None)
     }
 
-    fn parse_interested(&mut self, interested : bool) -> Result<Action,&'static str> {
+    fn parse_interested<'a>(&mut self, interested : bool) -> Result<Action<'a>,&'static str> {
         self.peer_interested = interested;
         Ok(Action::None)
     }
 
-    fn parse_have(&mut self, piece_index : u32) -> Result<Action,&'static str> {
+    fn parse_have<'a>(&mut self, piece_index : u32) -> Result<Action<'a>,&'static str> {
         if self.bitfield.is_empty() {
             return Err("Have not received bitfield from Peer");
         }
@@ -95,42 +97,67 @@ impl Peer {
         Ok(Action::None)
     }
 
-    fn  parse_bitfield(&mut self, bitfield : &[u8]) -> Result<Action,&'static str>{
+    fn  parse_bitfield<'a>(&mut self, bitfield : &[u8]) -> Result<Action<'a>,&'static str>{
         self.bitfield = BitVec::from_bytes(bitfield);
         Ok(Action::None)
     }
 
-    fn parse_request(&mut self, msg : &[u8]) -> Result<Action,&'static str> {
+    fn parse_piece_generic(&mut self, msg : &[u8]) -> Piece {
         let index = BigEndian::read_u32(&msg[5 .. 9]);
         let begin = BigEndian::read_u32(&msg[9 .. 13]);
         let length = BigEndian::read_u32(&msg[13 .. 17]);
-        let piece = Piece{index: index, begin: begin, length: length};
+
+        Piece{index: index, begin: begin, length: length}
+    }
+
+    fn parse_request<'a>(&mut self, msg : &[u8]) -> Result<Action<'a>,&'static str> {
+        let piece = self.parse_piece_generic(msg);
         self.request_queue.push(piece);
 
         if self.request_queue.len() >= QUEUE_LENGTH {
-            let action = Action::Write(self.request_queue.clone());
+            let action = Action::Request(self.request_queue.clone());
             self.request_queue.clear();
             Ok(action)
         }
         else {Ok(Action::None)}
     }
     
-    fn parse_piece(&mut self) -> Result<Action,&'static str> {
+    fn parse_piece<'a>(&mut self, msg : &'a [u8], len : u32) -> Result<Action<'a>,&'static str> {
+        let index = BigEndian::read_u32(&msg[5 .. 9]);
+        let begin = BigEndian::read_u32(&msg[9 .. 13]);
+        let block = &msg[13 .. len as usize];
+
+        let piece = Piece{index: index, begin: begin, length: len - 13};
+        let piece_data = PieceData{piece: piece, data: block};
+        Ok(Action::Write(piece_data))
+    }
+
+    fn parse_cancel<'a>(&mut self, msg : &[u8]) -> Result<Action<'a>,&'static str> {
+        let piece = self.parse_piece_generic(msg);
+        match self.request_queue.remove_item(&piece) {
+            Some(obj) => Ok(Action::None),
+            None => Err("Received cancel for piece not in queue")
+        }
+    }
+
+    fn parse_port<'a>(&mut self) -> Result<Action<'a>,&'static str> {
         unimplemented!();
         Ok(Action::None)
     }
 
-    fn parse_cancel(&mut self) -> Result<Action,&'static str> {
-        // Remove from request queue
-        unimplemented!();
-        Ok(Action::None)
-    }
+}
 
-    fn parse_port(&mut self) -> Result<Action,&'static str> {
-        unimplemented!();
-        Ok(Action::None)
-    }
-
+macro_rules! byte_slice_from_u32s {
+    ($($int:expr),*) => {
+        {
+            let mut vec = Vec::<u8>::new();
+            $(  
+                let bytes: [u8; 4] = unsafe { transmute($int.to_be()) };
+                vec.extend_from_slice(&bytes);
+            )*
+            vec
+        }
+    };
 }
 
 macro_rules! message {
@@ -147,6 +174,21 @@ macro_rules! message {
             )*
 
             vec
+        }
+    };
+}
+
+macro_rules! message_calc_length {
+    ($id:expr$(, $other:expr)*) => {
+        {
+            let mut len : u32 = 1;
+
+            $(  
+                let l = $other;
+                len = len + 4;
+            )*
+
+            message!(len, $id $(, $other )*)
         }
     };
 }
@@ -208,6 +250,19 @@ fn test_parse_request() {
 
     peer.parse_request(&request);
     assert_eq!(peer.request_queue.len(), 0);
+}
+
+#[test]
+fn test_parse_piece() {
+    let mut peer = Peer::new(PeerInfo::new());
+
+    let message = message_calc_length!(7u8, 0u32, 0u32, 1u32, 2u32, 3u32);
+    let bytes = byte_slice_from_u32s!(1u32, 2u32, 3u32);
+    let piece = Piece{index: 0u32, begin: 0u32, length: 12u32};
+    let piece_data = PieceData{piece: piece, data: &bytes};
+
+    let result = peer.parse_message(&message);
+    assert_eq!(result, Ok(Action::Write(piece_data)));
 }
 
 #[derive(Debug)]
