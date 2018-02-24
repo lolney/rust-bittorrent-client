@@ -1,4 +1,4 @@
-/* Tracker com handled here
+/* Tracker communication handled here
 */
 use bittorrent::Peer::{Peer};
 

@@ -5,7 +5,10 @@
 
 #[macro_use]
 extern crate nom;
+#[macro_use]
+extern crate log;
 extern crate byteorder;
 extern crate bit_vec;
+extern crate sha1;
 
 mod bittorrent;

@@ -11,7 +11,7 @@ pub struct Peer {
     peer_choking: bool,
     peer_interested: bool,
     peer_info : PeerInfo,
-    time: i32, // time in ms since last communication
+    time: u32, // time in ms since last communication
     bitfield: BitVec,
     request_queue: Vec<Piece>,
 }
@@ -24,6 +24,53 @@ pub enum Action<'a> {
 }
 
 const QUEUE_LENGTH : usize = 5;
+
+// Macro for creating peer messages
+macro_rules! message {
+        ($len:expr,$id:expr$(, $other:expr)*) => {
+            {
+                let mut vec = Vec::<u8>::new();
+                let bytes: [u8; 4] = unsafe { transmute($len.to_be()) };
+                vec.extend_from_slice(&bytes);
+                vec.push($id);
+
+                $(  
+                    let bytes: [u8; 4] = unsafe { transmute($other.to_be()) };
+                    vec.extend_from_slice(&bytes);
+                )*
+
+                vec
+            }
+        };
+    }
+
+macro_rules! byte_slice_from_u32s {
+    ($($int:expr),*) => {
+        {
+            let mut vec = Vec::<u8>::new();
+            $(  
+                let bytes: [u8; 4] = unsafe { transmute($int.to_be()) };
+                vec.extend_from_slice(&bytes);
+            )*
+            vec
+        }
+    };
+}
+
+macro_rules! message_calc_length {
+    ($id:expr$(, $other:expr)*) => {
+        {
+            let mut len : u32 = 1;
+
+            $(  
+                let l = $other;
+                len = len + 4;
+            )*
+
+            message!(len, $id $(, $other )*)
+        }
+    };
+}
 
 /// Maintains its own request queue
 /// Outsources actual networking
@@ -66,15 +113,6 @@ impl Peer {
         }
         
     }
-
-    /*fn handshake(&self){
-        let msg = HandshakeMessage::new();
-        msg.send();
-    }*/
-
-    // TODO: timer that close the connection when expired
-    // can implement as a manager with a priority queue
-    // Sleep until longest-lived peer expires, then delete
 
     fn parse_choke<'a>(&mut self, choke : bool) -> Result<Action<'a>,&'static str> {
         self.peer_choking = choke;
@@ -145,52 +183,37 @@ impl Peer {
         Ok(Action::None)
     }
 
-}
+    fn choke(&mut self, choke : bool) -> Vec<u8> {
+        self.am_choking = choke;
+        if(choke) {message!(1u32, 0u8)}
+        else {message!(1u32, 1u8)}
+    }
 
-macro_rules! byte_slice_from_u32s {
-    ($($int:expr),*) => {
-        {
-            let mut vec = Vec::<u8>::new();
-            $(  
-                let bytes: [u8; 4] = unsafe { transmute($int.to_be()) };
-                vec.extend_from_slice(&bytes);
-            )*
-            vec
-        }
-    };
-}
+    fn interested(&self, interested : bool) -> Vec<u8> {
+        unimplemented!();
+    }
+    
+    fn have(&self, piece_index : u32) -> Vec<u8> {
+        unimplemented!();
+    }
 
-macro_rules! message {
-    ($len:expr,$id:expr$(, $other:expr)*) => {
-        {
-            let mut vec = Vec::<u8>::new();
-            let bytes: [u8; 4] = unsafe { transmute($len.to_be()) };
-            vec.extend_from_slice(&bytes);
-            vec.push($id);
+    fn bitfield(&self) -> Vec<u8> {
+        unimplemented!();
+    }   
 
-            $(  
-                let bytes: [u8; 4] = unsafe { transmute($other.to_be()) };
-                vec.extend_from_slice(&bytes);
-            )*
+    fn piece(&self, msg : &[u8]) -> Vec<u8> {
+        unimplemented!();
+    }
 
-            vec
-        }
-    };
-}
+    fn cancel(&self, msg : &[u8]) -> Vec<u8> {
+        unimplemented!();
+    }
 
-macro_rules! message_calc_length {
-    ($id:expr$(, $other:expr)*) => {
-        {
-            let mut len : u32 = 1;
+    fn request(&self, pieces : Vec<Piece>) {
+        unimplemented!();
+    }
 
-            $(  
-                let l = $other;
-                len = len + 4;
-            )*
 
-            message!(len, $id $(, $other )*)
-        }
-    };
 }
 
 #[test]
@@ -292,15 +315,6 @@ trait Message{
 struct StdMessage{
     length_prefix: i32,
     message_id: String
-}
-
-#[derive(Debug)]
-struct HandshakeMessage{
-    pstrlen: u8,
-    pstr: String, //protocol string identifier
-    reserved: &'static [u8 ; 8], // 8 bytes
-    info_hash: [u8 ; 20], // 20 bytes
-    peer_id: [u8 ; 20] // 20 bytes
 }
 
 /*impl Message for HandshakeMessage {
