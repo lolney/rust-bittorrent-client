@@ -44,6 +44,17 @@ macro_rules! message {
         };
     }
 
+macro_rules! message_from_bytes {
+        ($len:expr,$id:expr,$bytes:expr$(, $other:expr)*) => {
+            {
+                let mut vec = message!($len, $id$(, $other)*);
+                vec.extend_from_slice(&$bytes);
+
+                vec
+            }
+        };
+    }
+
 macro_rules! byte_slice_from_u32s {
     ($($int:expr),*) => {
         {
@@ -74,18 +85,19 @@ macro_rules! message_calc_length {
 
 /// Maintains its own request queue
 /// Outsources actual networking
+/// Contains methods for parsing and sending relevant P2P messages
 impl Peer {
 
     // TODO: errors for lengths larger than the allowed size
     pub fn new(info : PeerInfo) -> Peer {
         Peer{
-            am_choking: true,
-            am_interested: false,
-            peer_choking: true,
-            peer_interested: false,
+            am_choking: true, // we won't send (we control)
+            am_interested: false, // requesting peer to send (we control)
+            peer_choking: true, // peer won't send (they control)
+            peer_interested: false, // peer wants us to send (they control)
             peer_info: info,
             time: 0,
-            bitfield: BitVec::new(),
+            bitfield: BitVec::new(), // their bitfield
             request_queue: Vec::new(),
         }
     }
@@ -148,6 +160,7 @@ impl Peer {
         Piece{index: index, begin: begin, length: length}
     }
 
+    // TODO: error when exceeding 2^14?
     fn parse_request<'a>(&mut self, msg : &[u8]) -> Result<Action<'a>,&'static str> {
         let piece = self.parse_piece_generic(msg);
         self.request_queue.push(piece);
@@ -160,6 +173,7 @@ impl Peer {
         else {Ok(Action::None)}
     }
     
+    // TODO: error when exceeding 2^14?
     fn parse_piece<'a>(&mut self, msg : &'a [u8], len : u32) -> Result<Action<'a>,&'static str> {
         let index = BigEndian::read_u32(&msg[5 .. 9]);
         let begin = BigEndian::read_u32(&msg[9 .. 13]);
@@ -189,28 +203,36 @@ impl Peer {
         else {message!(1u32, 1u8)}
     }
 
-    fn interested(&self, interested : bool) -> Vec<u8> {
-        unimplemented!();
+    fn interested(&mut self, interested : bool) -> Vec<u8> {
+        self.am_interested = interested;
+        if(interested) {message!(1u32, 2u8)}
+        else {message!(1u32, 3u8)}
     }
     
     fn have(&self, piece_index : u32) -> Vec<u8> {
-        unimplemented!();
+        message!(5u32, 4u8, piece_index)
     }
 
-    fn bitfield(&self) -> Vec<u8> {
-        unimplemented!();
+    // Accomodates bitvecs of max length (MAX_U32 - 1)
+    fn bitfield(&self, bitvec : BitVec) -> Vec<u8> {
+        let bytes = bitvec.to_bytes();
+        let length = 1 + bytes.len() as u32;
+        message_from_bytes!(length, 5u8, bytes)
     }   
 
-    fn piece(&self, msg : &[u8]) -> Vec<u8> {
-        unimplemented!();
+    fn piece(&self, pd : &PieceData) -> Vec<u8> {
+        let length = 9 + pd.data.len() as u32;
+        message_from_bytes!(length, 7u8, &pd.data, pd.piece.index, pd.piece.begin)
     }
 
-    fn cancel(&self, msg : &[u8]) -> Vec<u8> {
-        unimplemented!();
+    // 2^14 is generally the max length;
+    // probably will enforce this when making requests
+    fn request(&self, piece : &Piece) -> Vec<u8> {
+        message!(13u32, 6u8, piece.index, piece.begin, piece.length)
     }
 
-    fn request(&self, pieces : Vec<Piece>) {
-        unimplemented!();
+    fn cancel(&self, piece : &Piece) -> Vec<u8> {
+        message!(13u32, 8u8, piece.index, piece.begin, piece.length)
     }
 
 
@@ -228,12 +250,20 @@ fn test_simple_messages() {
 
     peer.parse_message(&choke);
     assert_eq!(peer.peer_choking, true);
+    assert_eq!(peer.choke(true), choke);
+    assert_eq!(peer.choke(true), &[0b00000000, 0b00000000, 0b00000000, 0b00000001, 0b000000000]);
+
     peer.parse_message(&unchoke);
     assert_eq!(peer.peer_choking, false);
+    assert_eq!(peer.choke(false), unchoke);
+
     peer.parse_message(&interested);
     assert_eq!(peer.peer_interested, true);
+    assert_eq!(peer.interested(true), interested);
+
     peer.parse_message(&not_interested);
     assert_eq!(peer.peer_interested, false);
+    assert_eq!(peer.interested(false), not_interested);
 }
 
 #[test]
@@ -241,14 +271,17 @@ fn test_parse_have() {
     let mut peer = Peer::new(PeerInfo::new());
 
     let have = message!(5u32, 4u8, 0u32);
+    assert_eq!(peer.have(0), have);
     assert_eq!(peer.parse_message(&have), Err("Have not received bitfield from Peer"));
     assert_eq!(peer.bitfield.get(0), None);
 
     let bitfield = message!(5u32, 5u8, 0b01000000000000000000000000000000 as u32);
+    assert_eq!(peer.bitfield(BitVec::from_bytes(&[0b01000000, 0b00000000, 0b00000000, 0b00000000])), bitfield);
     peer.parse_message(&bitfield);
     assert_eq!(peer.bitfield.get(1).unwrap(), true);
 
     let have = message!(5u32, 4u8, 32u32);
+    assert_eq!(peer.have(32), have);
     assert_eq!(peer.parse_message(&have), Err("Received have message with piece index that exceeds number of pieces"));
 
     let bitfield = message!(9u32, 5u8, 0b10000000000000000000000000000000 as u32, 0b10000000000000000000000000000000 as u32);
@@ -283,6 +316,8 @@ fn test_parse_piece() {
     let bytes = byte_slice_from_u32s!(1u32, 2u32, 3u32);
     let piece = Piece{index: 0u32, begin: 0u32, length: 12u32};
     let piece_data = PieceData{piece: piece, data: &bytes};
+
+    assert_eq!(peer.piece(&piece_data), message);
 
     let result = peer.parse_message(&message);
     assert_eq!(result, Ok(Action::Write(piece_data)));

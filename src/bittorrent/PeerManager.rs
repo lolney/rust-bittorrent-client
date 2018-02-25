@@ -8,7 +8,7 @@ use std::error::Error;
 
 pub struct PeerManager {
     //peers : PriorityQueue<Peer, u32>,
-    torrents : HashMap<[u8 ; 20], Torrent>,
+    torrents : HashMap<[u8 ; 20], Torrent>, // u8 is the Info_hash
 }
 
 #[derive(Debug)]
@@ -23,6 +23,7 @@ impl Error for NetworkError {
 }
 
 #[derive(PartialEq, Debug, Clone)]
+// Should also contain the pieces and the bitfield?
 pub struct Torrent {
     metainfo : MetaInfo,
     path: Path,
