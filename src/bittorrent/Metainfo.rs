@@ -7,14 +7,16 @@ use std::path::Path;
 use std::io::BufReader;
 use std::io::prelude::*;
 use sha1::Sha1;
+use std::str;
 use std::io::{Error};
 
 /*
 MetaInfo: The meat of a torrent file, containing hashes of all pieces and other metadata
 */
+#[derive(PartialEq, Debug)]
 pub struct MetaInfo {
     info : Info,
-    announce : String,
+    announce : Option<String>,
     announce_list : Option<Vec<String>>,
     creation_date : Option<String>,
     comment : Option<String>,
@@ -23,10 +25,11 @@ pub struct MetaInfo {
 }
 
 // Common traits to single- and multi- fileinfo
+#[derive(PartialEq, Debug)]
 struct Info{
     piece_length : i64,
-    pieces: Vec<u8>, // concatination of all 20-bit SHA-1 hash values
-    private: bool,
+    pieces: Vec<[u8 ; 20]>, // concatination of all 20-byte SHA-1 hash values
+    private: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -57,7 +60,7 @@ macro_rules! string_field {
 macro_rules! string_optional {
     ($t:expr,$hm:expr,$($x:ident),*) => {
         $(match $t.$x {
-            Some(ref string) => {$hm.insert(String::from(stringify!($x)), BencodeT::String(string.clone()));},
+            Some(ref string) => {$hm.insert(String::from(stringify!($x)), string.clone().to_BencodeT());},
             None => {},
         })*
     }
@@ -73,9 +76,9 @@ macro_rules! get_keys {
         )
     }
 }*/
-fn string_from_entry(hm : &HashMap<String, BencodeT>, string : &str) -> Option<String> {
+fn elem_from_entry<T : Bencodable>(hm : &HashMap<String, BencodeT>, string : &str) -> Option<T> {
     match hm.get(string){
-        Some(string) => Some(String::from_BencodeT(string).unwrap()),
+        Some(string) => Some(T::from_BencodeT(string).unwrap()),
         None => None,
     }
 }
@@ -132,15 +135,15 @@ impl MetaInfo {
             &BencodeT::Dictionary(ref hm) => Ok(
                 MetaInfo{
                     info : Info::from_BencodeT(checkHM(hm, "info")?)?,
-                    announce : String::from_BencodeT(checkHM(hm, "announce")?)?,
+                    announce : elem_from_entry(hm, "announce"),
                     announce_list : match hm.get("announce_list") {
                         Some(vec) => Some(checkVec(Vec::from_BencodeT(vec)?)?),
                         None => None
                     },
-                    creation_date : string_from_entry(hm, "creation_date"),
-                    comment : string_from_entry(hm, "comment"),
-                    created_by : string_from_entry(hm, "created_by"),
-                    encoding : string_from_entry(hm, "encoding"),
+                    creation_date : elem_from_entry(hm, "creation_date"),
+                    comment : elem_from_entry(hm, "comment"),
+                    created_by : elem_from_entry(hm, "created_by"),
+                    encoding : elem_from_entry(hm, "encoding"),
                 }
             ),
             _ => Err(ParseError::new_str("MetaInfo file not formatted as dictionary"))
@@ -153,9 +156,6 @@ impl MetaInfo {
         let info = self.info.to_BencodeT();
         hm.insert(String::from("info"), info);
 
-        let announce = BencodeT::String(self.announce.clone());
-        hm.insert(String::from("announce"), announce);
-
         match &self.announce_list {
             &Some(ref vec) => {
                 let bvec = vec.iter().map(|x| BencodeT::String(x.clone())).collect();
@@ -164,7 +164,7 @@ impl MetaInfo {
             &None => {} 
         }
 
-        string_optional!(self, hm, creation_date, comment, created_by, encoding);
+        string_optional!(self, hm, announce, creation_date, comment, created_by, encoding);
 
         BencodeT::Dictionary(hm)
     }
@@ -182,9 +182,12 @@ impl Info {
             &BencodeT::Dictionary(ref hm) => {
                 Ok(
                     Info {
-                        piece_length : i64::from_BencodeT(hm.get("piece_length").unwrap())?,
-                        pieces : checkVec(Vec::from_BencodeT(hm.get("pieces").unwrap())?)?,
-                        private : bool::from_BencodeT(hm.get("private").unwrap())?,
+                        piece_length : i64::from_BencodeT(hm.get("piece length").unwrap())?,
+                        pieces : {
+                            let string = String::from_BencodeT(hm.get("pieces").unwrap())?;
+                            Info::split_hashes(string)?
+                        },
+                        private : elem_from_entry(hm, "private"),
                     }
                 )
             },
@@ -192,12 +195,64 @@ impl Info {
         }
     }
 
+    fn split_hashes(string : String) -> Result<Vec<[u8; 20]>, ParseError>{
+        
+        if string.len() % 20 != 0 {
+            return Err(ParseError::new_str("pieces string must be multiple of 20"));
+        }
+
+        let mut vec = Vec::<[u8; 20]>::new();
+        let mut split = string;
+
+        for i in 0 .. split.len()/20 {
+            let (first, split) = split.split_at(20);
+            let mut a : [u8;20] = Default::default();
+            a.copy_from_slice(&first[0..20].as_bytes());
+            vec.push(a);
+        }
+
+        Ok(vec)
+    }
+
+    fn hashes_to_string(hashes : &Vec<[u8; 20]>) -> BencodeT {
+        let mut vec = Vec::<u8>::new();
+        for slice in hashes {
+            vec.extend_from_slice(slice);
+        }
+        return unsafe {
+            BencodeT::String(String::from_utf8_unchecked(vec))
+        };
+    }
+
     pub fn to_BencodeT(&self) -> BencodeT {
-        let hm = HashMap::new();
-        BencodeT::Dictionary(hm);
-        unimplemented!();
+        let mut hm = HashMap::new();
+
+        hm.insert(String::from("piece length"), self.piece_length.to_BencodeT());
+        hm.insert(String::from("pieces"), Info::hashes_to_string(&self.pieces));
+        string_optional!(self, hm, private);
+
+        BencodeT::Dictionary(hm)
     }
 }
 
 
-// TODO: Tests
+#[test]
+fn test_read_write() {
+    let metainfo = MetaInfo::read("bible.torrent".to_string()).unwrap();
+    metainfo.write("bible-out.torrent".to_string());
+    let metainfo2 = MetaInfo::read("bible-out.torrent".to_string()).unwrap();
+    assert_eq!(metainfo, metainfo2);
+}
+
+#[test]
+fn test_pieces() {
+    let bytes : [u8; 20] = [54, 30, 209, 250, 31, 227, 163, 34, 205, 182, 4, 37, 119, 22, 3, 185, 16, 53, 29, 166];
+    let string = unsafe {
+        str::from_utf8_unchecked(&bytes).to_string()
+    };
+    let vec = Info::split_hashes(string.clone()).unwrap();
+    let bstring = Info::hashes_to_string(&vec);
+
+    //assert_eq!(string.as_bytes(), );
+    assert_eq!(BencodeT::String(string), bstring);
+}

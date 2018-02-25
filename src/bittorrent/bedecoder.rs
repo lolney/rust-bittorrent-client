@@ -143,9 +143,14 @@ fn ascii_utf8_to_i64(buffer : &[u8]) -> i64 {
     return parse_i64(as_string).unwrap();
 }
 
+// The 'pieces' string in the info dictionary
+// probably contains invalid utf-8 -
+// It's a bunch of hashes 
 fn utf8_to_string(bytes: &[u8]) -> String {
     let vector: Vec<u8> = Vec::from(bytes);
-    return String::from_utf8(vector).unwrap();
+    return unsafe {
+        String::from_utf8_unchecked(vector)
+    };
 }
 
 fn parseStr(inbytes : &[u8], i : usize) -> (Result<BencodeT,String>, usize) {
