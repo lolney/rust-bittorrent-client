@@ -22,38 +22,67 @@ pub enum BencodeT {
 }
 
 #[derive(Debug)]
-pub struct ParseError{
-    msg: String,
+pub enum ParseError{
+    Parse(String),
+    IO(String, IOError),
 }
 
 impl ParseError {
     pub fn new(string : String) -> ParseError {
-        ParseError {
-            msg: string,
-        }
+        ParseError::Parse(string)
     }
 
     // No polymorphic constructors
     pub fn new_str(string : &str) -> ParseError {
-        ParseError {
-            msg: String::from(string),
-        }
+        ParseError::Parse(String::from(string))
+    }
+
+    pub fn new_cause(string : &str, cause : IOError) -> ParseError {
+        ParseError::IO(String::from(string), cause)
+    }
+
+    pub fn from_parse(string : &str, cause : ParseError) -> ParseError {
+        ParseError::Parse(format!("{} : {}", string, cause.description()))
+    }
+
+    pub fn from_parse_string(string : String, cause : ParseError) -> ParseError {
+        ParseError::Parse(format!("{} : {}", string, cause.description()))
     }
 }
 
 impl From<IOError> for ParseError {
     fn from(error: IOError) -> Self {
-        ParseError::new_str(error.description())
+        ParseError::new_cause("", error)
     }
 }
 
 impl Error for ParseError {
-    fn description(&self) -> &str {self.msg.as_str()}
+    fn description(&self) -> &str {
+        match self {
+            &ParseError::Parse(ref string) => string.as_str(),
+            &ParseError::IO(ref string, ref ioerror) => string.as_str(),
+        }
+    }
+
+    fn cause(&self) -> Option<&Error> {
+        match self {
+            &ParseError::Parse(ref string) => None,
+            &ParseError::IO(ref string, ref ioerror) => Some(ioerror),
+        }
+    }
 }
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.msg)
+        match self {
+            &ParseError::Parse(ref string) => {
+                write!(f, "{}", string)
+            },
+            &ParseError::IO(ref string, ref ioerror) => {
+                write!(f, "{}; Cause: {:?}", string, ioerror)
+            },
+        }
+        
     }
 }
 
@@ -67,7 +96,10 @@ impl Bencodable for String {
     fn from_BencodeT(bencode_t : &BencodeT) -> Result<String, ParseError> {
         match bencode_t {
             &BencodeT::String(ref string) => Ok(string.clone()),
-            _ => Err(ParseError::new_str("Attempted to convert non-string BencodeT to string"))
+            &BencodeT::Integer(int) => Err(ParseError::new_str("Attempted to convert int BencodeT to string")),
+            &BencodeT::Dictionary(ref hm) => Err(ParseError::new_str("Attempted to convert dict BencodeT to string")),
+            &BencodeT::List(ref vec) => Err(ParseError::new(format!("Attempted to convert list BencodeT to string: {:?}", vec))),
+            _ => Err(ParseError::new_str("Attempted to convert non-string BencodeT to string")),
         }
     }
 }

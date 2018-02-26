@@ -8,7 +8,8 @@ use std::io::BufReader;
 use std::io::prelude::*;
 use sha1::Sha1;
 use std::str;
-use std::io::{Error};
+use std::error::Error;
+use std::io::Error as IOError;
 
 /*
 MetaInfo: The meat of a torrent file, containing hashes of all pieces and other metadata
@@ -83,13 +84,44 @@ fn elem_from_entry<T : Bencodable>(hm : &HashMap<String, BencodeT>, string : &st
     }
 }
 
+fn convert(b : BencodeT) -> Result<String, ParseError> {
+    let vec : Vec<String> = _checkVec(Vec::from_BencodeT(&b)?)?;
+    Ok(vec[0].clone())
+}
+
 // Need to check that the vector is of the required type
-fn checkVec<T : Bencodable>(vec : Vec<BencodeT>) -> Result<Vec<T>, ParseError> {
+// Try to convert if necessary
+fn checkVec<T: Bencodable>(vec : Vec<BencodeT>, convert : fn(BencodeT) ->
+        Result<T, ParseError>) -> Result<Vec<T>, ParseError> {
+
     let mut out : Vec<T> = Vec::new();
     for elem in vec {
         match T::from_BencodeT(&elem) {
             Ok(val) => { out.push(val) }
-            Err(error) => return Err(ParseError::new_str("Expected vector to contain u8s"))
+            Err(error) => {
+                match convert(elem) {
+                    Ok(val2) => { out.push(val2) }
+                    Err(error2) => {
+                        let string = format!("Vector is of incorrect type : {}", error2.description());
+                        return Err(ParseError::from_parse_string(string, error));
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn _checkVec<T: Bencodable>(vec : Vec<BencodeT>) -> Result<Vec<T>, ParseError> {
+
+    let mut out : Vec<T> = Vec::new();
+    for elem in vec {
+        match T::from_BencodeT(&elem) {
+            Ok(val) => { out.push(val) }
+            Err(error) => {
+                let string = "Vector is of incorrect type";
+                return Err(ParseError::from_parse(string, error));
+            }
         }
     }
     Ok(out)
@@ -119,11 +151,11 @@ impl MetaInfo {
 
         match parse(&contents){
             Ok(bencodet) => MetaInfo::from_BencodeT(&bencodet),
-            Err(err) => Err(ParseError{msg: err}),
+            Err(err) => Err(ParseError::new(err)),
         }
     }
 
-    pub fn write(&self, outfile : String) -> Result<(), Error>{
+    pub fn write(&self, outfile : String) -> Result<(), IOError>{
         let bencodet = self.to_BencodeT();
         let bencoded = encode(&bencodet);
         let mut file = File::create(&outfile)?;
@@ -136,13 +168,13 @@ impl MetaInfo {
                 MetaInfo{
                     info : Info::from_BencodeT(checkHM(hm, "info")?)?,
                     announce : elem_from_entry(hm, "announce"),
-                    announce_list : match hm.get("announce_list") {
-                        Some(vec) => Some(checkVec(Vec::from_BencodeT(vec)?)?),
+                    announce_list : match hm.get("announce-list") {
+                        Some(vec) => Some(checkVec(Vec::from_BencodeT(vec)?, convert)?),
                         None => None
                     },
-                    creation_date : elem_from_entry(hm, "creation_date"),
+                    creation_date : elem_from_entry(hm, "creation date"),
                     comment : elem_from_entry(hm, "comment"),
-                    created_by : elem_from_entry(hm, "created_by"),
+                    created_by : elem_from_entry(hm, "created by"),
                     encoding : elem_from_entry(hm, "encoding"),
                 }
             ),
@@ -159,7 +191,7 @@ impl MetaInfo {
         match &self.announce_list {
             &Some(ref vec) => {
                 let bvec = vec.iter().map(|x| BencodeT::String(x.clone())).collect();
-                hm.insert(String::from("announce_list"), BencodeT::List(bvec));
+                hm.insert(String::from("announce-list"), BencodeT::List(bvec));
             }
             &None => {} 
         }
@@ -202,12 +234,12 @@ impl Info {
         }
 
         let mut vec = Vec::<[u8; 20]>::new();
-        let mut split = string;
 
-        for i in 0 .. split.len()/20 {
-            let (first, split) = split.split_at(20);
+        for i in 0 .. string.len()/20 {
+            let s = i*20;
+            let e = (i+1)*20;
             let mut a : [u8;20] = Default::default();
-            a.copy_from_slice(&first[0..20].as_bytes());
+            a.copy_from_slice(&string.as_bytes()[s..e]);
             vec.push(a);
         }
 
@@ -246,13 +278,19 @@ fn test_read_write() {
 
 #[test]
 fn test_pieces() {
-    let bytes : [u8; 20] = [54, 30, 209, 250, 31, 227, 163, 34, 205, 182, 4, 37, 119, 22, 3, 185, 16, 53, 29, 166];
+    let bytes : [u8; 40] = [54, 30, 209, 250, 31, 227, 163, 34, 205, 182, 4, 37, 119, 22, 3, 185, 16, 53, 29, 166,
+                            204, 177, 1, 160, 101, 203, 150, 69, 169, 79, 86, 153, 37, 219, 218, 106, 227, 35, 24, 1];
     let string = unsafe {
         str::from_utf8_unchecked(&bytes).to_string()
     };
     let vec = Info::split_hashes(string.clone()).unwrap();
     let bstring = Info::hashes_to_string(&vec);
 
-    //assert_eq!(string.as_bytes(), );
+    match &bstring {
+        &BencodeT::String(ref string2) => {
+            assert_eq!(string.as_bytes(), string2.as_bytes());
+        }
+        _ => {}
+    }
     assert_eq!(BencodeT::String(string), bstring);
 }
