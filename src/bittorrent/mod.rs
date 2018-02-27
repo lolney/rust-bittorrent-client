@@ -11,6 +11,7 @@ mod utils;
 mod Peer;
 mod Trackers;
 mod Metainfo;
+mod PeerManager;
 
 /* Describes a decoded benencodable object */
 #[derive(PartialEq, Debug, Clone)]

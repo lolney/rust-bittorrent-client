@@ -10,5 +10,6 @@ extern crate log;
 extern crate byteorder;
 extern crate bit_vec;
 extern crate sha1;
+//extern crate priority_queue;
 
 mod bittorrent;

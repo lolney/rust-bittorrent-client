@@ -3,17 +3,19 @@ use byteorder::ByteOrder;
 use bit_vec::BitVec;
 use bittorrent::{Piece, PieceData};
 use std::mem::transmute;
+use std::cmp::{Ordering};
 
 #[derive(Debug)]
 pub struct Peer {
-    am_choking: bool, // if true, will not answer requests
-    am_interested: bool, // interested in something the client has to offer
-    peer_choking: bool,
-    peer_interested: bool,
-    peer_info : PeerInfo,
-    time: u32, // time in ms since last communication
-    bitfield: BitVec,
-    request_queue: Vec<Piece>,
+    pub am_choking: bool, // if true, will not answer requests
+    pub am_interested: bool, // interested in something the client has to offer
+    pub peer_choking: bool,
+    pub peer_interested: bool,
+    pub peer_info : PeerInfo,
+    pub time: u32, // time in ms since last communication
+    pub bitfield: BitVec,
+    pub request_queue: Vec<Piece>,
+    pub download_speed: usize,
 }
 
 #[derive(Debug, PartialEq)]
@@ -99,10 +101,11 @@ impl Peer {
             time: 0,
             bitfield: BitVec::new(), // their bitfield
             request_queue: Vec::new(),
+            download_speed: 0,
         }
     }
 
-    fn parse_message<'a>(&mut self, msg : &'a [u8]) -> Result<Action<'a>,&'static str> {
+    pub fn parse_message<'a>(&mut self, msg : &'a [u8]) -> Result<Action<'a>,&'static str> {
         self.time = 0;
         let len : u32 = BigEndian::read_u32(&msg[0 .. 4]); // parse u32
         if len == 0 {Ok(Action::None)} // keep alive
@@ -126,17 +129,17 @@ impl Peer {
         
     }
 
-    fn parse_choke<'a>(&mut self, choke : bool) -> Result<Action<'a>,&'static str> {
+    pub fn parse_choke<'a>(&mut self, choke : bool) -> Result<Action<'a>,&'static str> {
         self.peer_choking = choke;
         Ok(Action::None)
     }
 
-    fn parse_interested<'a>(&mut self, interested : bool) -> Result<Action<'a>,&'static str> {
+    pub fn parse_interested<'a>(&mut self, interested : bool) -> Result<Action<'a>,&'static str> {
         self.peer_interested = interested;
         Ok(Action::None)
     }
 
-    fn parse_have<'a>(&mut self, piece_index : u32) -> Result<Action<'a>,&'static str> {
+    pub fn parse_have<'a>(&mut self, piece_index : u32) -> Result<Action<'a>,&'static str> {
         if self.bitfield.is_empty() {
             return Err("Have not received bitfield from Peer");
         }
@@ -147,12 +150,12 @@ impl Peer {
         Ok(Action::None)
     }
 
-    fn  parse_bitfield<'a>(&mut self, bitfield : &[u8]) -> Result<Action<'a>,&'static str>{
+    pub fn  parse_bitfield<'a>(&mut self, bitfield : &[u8]) -> Result<Action<'a>,&'static str>{
         self.bitfield = BitVec::from_bytes(bitfield);
         Ok(Action::None)
     }
 
-    fn parse_piece_generic(&mut self, msg : &[u8]) -> Piece {
+    pub fn parse_piece_generic(&mut self, msg : &[u8]) -> Piece {
         let index = BigEndian::read_u32(&msg[5 .. 9]);
         let begin = BigEndian::read_u32(&msg[9 .. 13]);
         let length = BigEndian::read_u32(&msg[13 .. 17]);
@@ -161,7 +164,7 @@ impl Peer {
     }
 
     // TODO: error when exceeding 2^14?
-    fn parse_request<'a>(&mut self, msg : &[u8]) -> Result<Action<'a>,&'static str> {
+    pub fn parse_request<'a>(&mut self, msg : &[u8]) -> Result<Action<'a>,&'static str> {
         let piece = self.parse_piece_generic(msg);
         self.request_queue.push(piece);
 
@@ -174,7 +177,7 @@ impl Peer {
     }
     
     // TODO: error when exceeding 2^14?
-    fn parse_piece<'a>(&mut self, msg : &'a [u8], len : u32) -> Result<Action<'a>,&'static str> {
+    pub fn parse_piece<'a>(&mut self, msg : &'a [u8], len : u32) -> Result<Action<'a>,&'static str> {
         let index = BigEndian::read_u32(&msg[5 .. 9]);
         let begin = BigEndian::read_u32(&msg[9 .. 13]);
         let block = &msg[13 .. len as usize];
@@ -184,7 +187,7 @@ impl Peer {
         Ok(Action::Write(piece_data))
     }
 
-    fn parse_cancel<'a>(&mut self, msg : &[u8]) -> Result<Action<'a>,&'static str> {
+    pub fn parse_cancel<'a>(&mut self, msg : &[u8]) -> Result<Action<'a>,&'static str> {
         let piece = self.parse_piece_generic(msg);
         match self.request_queue.remove_item(&piece) {
             Some(obj) => Ok(Action::None),
@@ -192,51 +195,81 @@ impl Peer {
         }
     }
 
-    fn parse_port<'a>(&mut self) -> Result<Action<'a>,&'static str> {
+    pub fn parse_port<'a>(&mut self) -> Result<Action<'a>,&'static str> {
         unimplemented!();
         Ok(Action::None)
     }
 
-    fn choke(&mut self, choke : bool) -> Vec<u8> {
+    pub fn choke(&mut self, choke : bool) -> Vec<u8> {
         self.am_choking = choke;
         if(choke) {message!(1u32, 0u8)}
         else {message!(1u32, 1u8)}
     }
 
-    fn interested(&mut self, interested : bool) -> Vec<u8> {
+    pub fn interested(&mut self, interested : bool) -> Vec<u8> {
         self.am_interested = interested;
         if(interested) {message!(1u32, 2u8)}
         else {message!(1u32, 3u8)}
     }
     
-    fn have(&self, piece_index : u32) -> Vec<u8> {
+    pub fn have(&self, piece_index : u32) -> Vec<u8> {
         message!(5u32, 4u8, piece_index)
     }
 
     // Accomodates bitvecs of max length (MAX_U32 - 1)
-    fn bitfield(&self, bitvec : BitVec) -> Vec<u8> {
+    pub fn bitfield(&self, bitvec : BitVec) -> Vec<u8> {
         let bytes = bitvec.to_bytes();
         let length = 1 + bytes.len() as u32;
         message_from_bytes!(length, 5u8, bytes)
     }   
 
-    fn piece(&self, pd : &PieceData) -> Vec<u8> {
+    pub fn piece(&self, pd : &PieceData) -> Vec<u8> {
         let length = 9 + pd.data.len() as u32;
         message_from_bytes!(length, 7u8, &pd.data, pd.piece.index, pd.piece.begin)
     }
 
     // 2^14 is generally the max length;
     // probably will enforce this when making requests
-    fn request(&self, piece : &Piece) -> Vec<u8> {
+    pub fn request(&self, piece : &Piece) -> Vec<u8> {
         message!(13u32, 6u8, piece.index, piece.begin, piece.length)
     }
 
-    fn cancel(&self, piece : &Piece) -> Vec<u8> {
+    pub fn cancel(&self, piece : &Piece) -> Vec<u8> {
         message!(13u32, 8u8, piece.index, piece.begin, piece.length)
     }
 
-
 }
+
+/// Ordering for unchoking selection
+impl Ord for Peer {
+    fn cmp(&self, other: &Peer) -> Ordering {
+        if (self.peer_interested && other.peer_interested) ||
+            (!self.peer_interested && !other.peer_interested) {
+            return self.download_speed.cmp(&other.download_speed);
+        } else if self.peer_interested && !other.peer_interested {
+            return Ordering::Greater;
+        } else {
+            return Ordering::Less;
+        }
+    }
+}
+
+impl PartialOrd for Peer {
+    fn partial_cmp(&self, other: &Peer) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Peer {
+    fn eq(&self, other: &Peer) -> bool {
+        match self.cmp(other) {
+            Ordering::Equal => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Peer {}
 
 #[test]
 fn test_simple_messages() {
@@ -325,15 +358,17 @@ fn test_parse_piece() {
 
 #[derive(Debug)]
 pub struct PeerInfo{
-    peer_id: String,
-    ip: String,
-    port: i64,
+    pub peer_id: String,
+    pub info_hash: [u8 ; 20],
+    pub ip: String,
+    pub port: i64,
 }
 
 impl PeerInfo {
     fn new() -> PeerInfo {
         PeerInfo{
             peer_id: String::from(""),
+            info_hash: Default::default(),
             ip: String::from("127.0.0.1"),
             port: 8000,
         }

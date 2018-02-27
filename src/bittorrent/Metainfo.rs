@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use bittorrent::{BencodeT, Bencodable, Peer, ParseError, PieceData};
+use bittorrent::{BencodeT, Bencodable, Peer, ParseError, PieceData, Piece};
 use bittorrent::bencoder::{encode};
 use bittorrent::bedecoder::{parse};
 use std::fs::File;
@@ -10,11 +10,11 @@ use sha1::Sha1;
 use std::str;
 use std::error::Error;
 use std::io::Error as IOError;
+use bit_vec::BitVec;
 
-/*
-MetaInfo: The meat of a torrent file, containing hashes of all pieces and other metadata
-*/
-#[derive(PartialEq, Debug)]
+/// MetaInfo: Representation of a .torrent file, 
+/// containing hashes of all pieces and other metadata
+#[derive(PartialEq, Debug, Clone)]
 pub struct MetaInfo {
     info : Info,
     announce : Option<String>,
@@ -25,12 +25,13 @@ pub struct MetaInfo {
     encoding : Option<String>,
 }
 
-// Common traits to single- and multi- fileinfo
-#[derive(PartialEq, Debug)]
+/// Common traits to single- and multi- fileinfo
+#[derive(PartialEq, Debug, Clone)]
 struct Info{
     piece_length : i64,
     pieces: Vec<[u8 ; 20]>, // concatination of all 20-byte SHA-1 hash values
     private: Option<bool>,
+    // TODO: enum for Single-/Multi-file
 }
 
 #[derive(Debug)]
@@ -45,11 +46,56 @@ struct MultiFileInfo {
     files: Vec<MIFile>,
 }
 
-// Component of a multi-file info
+/// Component of a multi-file info
 struct MIFile {
     length: i64,
     md5sum: Option<String>,
     path: Vec<String>, 
+}
+
+/* Need to:
+- Maintain file access to downloading/uploading data; 
+  should probably cache in memory
+- Keep track of partial download of pieces
+- Maintain our bitfield
+
+Pieces are treated as part of a single file,
+so also need to abstract away file boundaries
+*/
+#[derive(PartialEq, Debug, Clone)]
+pub struct Torrent {
+    metainfo: MetaInfo,
+    bitfield: BitVec,
+    map : HashMap<u32, Vec<u32>>, // Piece indices -> indices within piece
+}
+
+impl Torrent {
+
+    pub fn new(path : String) -> Torrent {
+        Torrent {
+            metainfo : MetaInfo::read(path).unwrap(),
+            bitfield : BitVec::new(),
+            map : HashMap::new(),
+        }
+    }
+
+    pub fn write_block(&mut self, piece : PieceData){
+        unimplemented!();
+    }
+
+    pub fn read_block<'a>(&mut self, piece : &'a Piece) -> 'a PieceData {
+        unimplemented!();
+    }
+
+    pub fn info_hash(&self) -> [u8; 20] {
+        return self.metainfo.info_hash();
+    }
+
+    /// Update data structure to reflect parts of piece
+    /// that have been downloaded
+    fn insertPiece(){
+        unimplemented!();
+    }
 }
 
 macro_rules! string_field {
