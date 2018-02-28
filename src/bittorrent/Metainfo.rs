@@ -83,7 +83,7 @@ impl Torrent {
         unimplemented!();
     }
 
-    pub fn read_block<'a>(&mut self, piece : &'a Piece) -> 'a PieceData {
+    pub fn read_block<'a>(&mut self, piece : &'a Piece) -> PieceData {
         unimplemented!();
     }
 
@@ -245,10 +245,6 @@ impl MetaInfo {
         string_optional!(self, hm, announce, creation_date, comment, created_by, encoding);
 
         BencodeT::Dictionary(hm)
-    }
-
-    pub fn write_piece(&self, path : &Path, piece : PieceData) {
-        unimplemented!();
     }
 }
 

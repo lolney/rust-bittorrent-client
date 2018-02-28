@@ -1,9 +1,12 @@
 use byteorder::BigEndian;
 use byteorder::ByteOrder;
 use bit_vec::BitVec;
-use bittorrent::{Piece, PieceData};
+use bittorrent::{Piece, PieceData, ParseError};
 use std::mem::transmute;
 use std::cmp::{Ordering};
+use rand::{Rng};
+use rand;
+use std::str::from_utf8;
 
 #[derive(Debug)]
 pub struct Peer {
@@ -27,7 +30,7 @@ pub enum Action<'a> {
 
 const QUEUE_LENGTH : usize = 5;
 
-// Macro for creating peer messages
+// Macro for creating peer messages with 32-byte arguments
 macro_rules! message {
         ($len:expr,$id:expr$(, $other:expr)*) => {
             {
@@ -238,6 +241,63 @@ impl Peer {
         message!(13u32, 8u8, piece.index, piece.begin, piece.length)
     }
 
+    pub fn gen_peer_id() -> [u8; 20] {
+        let mut id : [u8;20] = [0;20];
+        let mut rng = rand::thread_rng();
+        for x in id.iter_mut() {
+            *x = rng.gen();
+        }
+        return id;
+    }
+
+    /// Static method: received before the peer is created
+    /// Extracts the torrent and Peer ID from the handshake
+    pub fn parse_handshake(msg : &[u8]) -> Result<([u8 ; 20], [u8 ; 20]), ParseError>{
+        let mut i = 0;
+
+        // check message size
+        if(msg.len() < ::HSLEN){
+            return Err(ParseError::new(format!("Unexpected handshake length: {}", msg.len())));
+        }
+
+        let pstrlen = msg[i];
+        if pstrlen != ::PSTRLEN {
+            return Err(ParseError::new(format!("Unexpected pstrlen: {}", pstrlen)));
+        }
+
+        i = i + 1;
+        let pstr = &msg[i .. i + pstrlen as usize];
+        if from_utf8(pstr).unwrap() != ::PSTR {
+            return Err(ParseError::new(format!("Unexpected protocol string: {:?}", pstr)));
+        }
+
+        i = i + 8 + pstrlen as usize;
+        let mut info_hash: [u8; 20] = Default::default();
+        info_hash.copy_from_slice(&msg[i .. i + 20]);
+
+        i = i + 20;
+        let mut peer_id: [u8; 20] = Default::default();
+        peer_id.copy_from_slice(&msg[i .. i + 20]);
+
+        return Ok((peer_id, info_hash))
+    }
+
+    /// Generate the handshake message;
+    pub fn handshake(peer_id : &[u8;20], info_hash : &[u8;20]) -> [u8; ::HSLEN] {
+        let mut i = 0;
+        let mut msg : [u8; ::HSLEN] = [0 ;  ::HSLEN];
+
+        msg[i] = ::PSTRLEN;
+        i = i+1;
+        msg[i .. i+::PSTRLEN as usize].copy_from_slice(::PSTR.as_bytes());
+        i += 8 + ::PSTRLEN as usize;
+        msg[i .. i+20].copy_from_slice(info_hash);
+        i += 20;
+        msg[i .. i+20].copy_from_slice(peer_id);
+
+        return msg;
+    }
+
 }
 
 /// Ordering for unchoking selection
@@ -356,6 +416,18 @@ fn test_parse_piece() {
     assert_eq!(result, Ok(Action::Write(piece_data)));
 }
 
+#[test]
+fn test_parse_handshake() {
+    let mut buf : [u8 ; 68] = [0;68];
+    let peer_id = Peer::gen_peer_id();
+    let info_hash = Peer::gen_peer_id();
+    let hsmsg = Peer::handshake(&peer_id, &info_hash);
+    let (pi, inf) = Peer::parse_handshake(&hsmsg).unwrap();
+
+    assert_eq!(pi, peer_id);
+    assert_eq!(inf,  info_hash);
+}
+
 #[derive(Debug)]
 pub struct PeerInfo{
     pub peer_id: String,
@@ -375,6 +447,7 @@ impl PeerInfo {
     }
 }
 
+/* Found these data structures unecessary
 trait Message{
     fn send(peer : Peer);
     fn handle();
@@ -386,13 +459,4 @@ struct StdMessage{
     length_prefix: i32,
     message_id: String
 }
-
-/*impl Message for HandshakeMessage {
-    fn send(peer: Peer) {
-
-    }
-
-    fn concat() -> Vec<u8> {
-
-    }
-}*/
+*/

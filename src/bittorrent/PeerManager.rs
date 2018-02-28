@@ -1,6 +1,6 @@
 extern crate core;
 
-use bittorrent::{Peer::Peer, Peer::PeerInfo, Peer::Action, Metainfo, Metainfo::Torrent, Piece};
+use bittorrent::{Peer::Peer, Peer::PeerInfo, Peer::Action, Metainfo, Metainfo::Torrent, Piece, ParseError};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, SystemTime};
 use std::error::Error;
@@ -12,6 +12,7 @@ use std::{thread};
 use std::io::{ErrorKind, Write, Read};
 use std::fmt;
 use std::str::from_utf8;
+use std::fmt::Display;
 
 pub struct PeerManager {
     /*
@@ -24,6 +25,7 @@ pub struct PeerManager {
     */
     peers : Arc<Mutex<BinaryHeap<Peer>>>,
     torrents : Arc<Mutex<HashMap<[u8 ; 20], Torrent>>>, // u8 is the Info_hash
+    peer_id : [u8 ; 20], // our peer id
 }
 
 #[derive(Debug)]
@@ -42,17 +44,18 @@ impl fmt::Display for NetworkError {
     }
 }
 
-const HSLEN : usize = 50;
-const PSTRLEN : u8 = 19;
-const PSTR : &'static str = "BitTorrent protocol";
-const READ_TIMEOUT : u64 = 5;
-const MSG_SIZE : usize = 2^16;
+impl From<ParseError> for NetworkError {
+    fn from(error: ParseError) -> Self {
+        NetworkError{msg: error.to_string()}
+    }
+}
 
 impl PeerManager {
     fn new() -> PeerManager {
         PeerManager{
             peers: Arc::new(Mutex::new(BinaryHeap::new())),
             torrents: Arc::new(Mutex::new(HashMap::new())),
+            peer_id : Peer::gen_peer_id(),
         }
     } 
 
@@ -65,9 +68,9 @@ impl PeerManager {
 
     /// Handle incoming clients
     fn handle_client(stream: &TcpStream, torrents: &Arc<Mutex<HashMap<[u8 ; 20], Torrent>>>) -> Result<Peer, NetworkError> {
-        let mut buf : [u8 ; 68]; // size of handshake: 19 + 49
+        let mut buf : [u8 ; 68] = [0;68]; // size of handshake: 19 + 49
         // read handshake and create peer
-        match PeerManager::parse_handshake(&buf) {
+        match Peer::parse_handshake(&buf) {
             Ok((peer_id, info_hash)) => {
                 PeerManager::match_torrent(&info_hash, torrents)?;
                 let info = PeerInfo{
@@ -80,7 +83,7 @@ impl PeerManager {
                 // self.peers.push(peer, begin.elapsed())
                 Ok(peer)
             },
-            Err(err) => Err(err),
+            Err(err) => Err(NetworkError::from(err)),
         }
     }
 
@@ -93,40 +96,9 @@ impl PeerManager {
         Err(NetworkError{msg: format!("Failed to find torrent with info hash: {:?}", info_hash)})
     }
 
-    /// Extract the torrent and Peer ID from the handshake
-    fn parse_handshake(msg : &[u8]) -> Result<([u8 ; 20], [u8 ; 20]), NetworkError>{
-        let mut i = 0;
-
-        // check message size
-        if(msg.len() < HSLEN){
-            return Err(NetworkError{msg: format!("Unexpected handshake length: {}", msg.len())});
-        }
-
-        let pstrlen = msg[i];
-        if pstrlen != PSTRLEN {
-            return Err(NetworkError{msg: format!("Unexpected pstrlen: {}", pstrlen)});
-        }
-
-        i = i + 1;
-        let pstr = &msg[i .. i + pstrlen as usize];
-        if from_utf8(pstr).unwrap() != PSTR {
-            return Err(NetworkError{msg: format!("Unexpected protocol string: {:?}", pstr)});
-        }
-
-        i = i + 8 + pstrlen as usize;
-        let mut info_hash: [u8; 20] = Default::default();
-        info_hash.copy_from_slice(&msg[i .. i + 20]);
-
-        i = i + 20;
-        let mut peer_id: [u8; 20] = Default::default();
-        peer_id.copy_from_slice(&msg[i .. i + 20]);
-
-        return Ok((peer_id, info_hash))
-    }
-
-    fn receive(mut peer : Peer, stream : TcpStream, torrents : Arc<Mutex<HashMap<[u8 ; 20], Torrent>>>) {
-        let mut buf = [0; MSG_SIZE];
-        stream.set_read_timeout(Some(Duration::new(READ_TIMEOUT, 0)));
+    fn receive(mut peer : Peer, mut stream : TcpStream, torrents : Arc<Mutex<HashMap<[u8 ; 20], Torrent>>>) {
+        let mut buf = [0; ::MSG_SIZE];
+        stream.set_read_timeout(Some(Duration::new(::READ_TIMEOUT, 0)));
         loop {
             match stream.read(&mut buf) {
                 Err(e) => {
@@ -177,11 +149,11 @@ impl PeerManager {
         unimplemented!();
     }
 
-    fn handle(&mut self) {
+    fn handle(&mut self, port : &str) { // "127.0.0.1:80"
         let torrents = self.torrents.clone();
 
         thread::spawn(move || { // listens for incoming connections
-            let listener = TcpListener::bind("127.0.0.1:80").unwrap();
+            let listener = TcpListener::bind(port).unwrap();
             for stream in listener.incoming() {
                 let torrents = torrents.clone();
                 match stream {
@@ -206,7 +178,4 @@ impl PeerManager {
     }
 }
 
-#[test]
-fn test_parse_handshake() {
-
-}
+// 
