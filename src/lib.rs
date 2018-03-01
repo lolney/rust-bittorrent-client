@@ -11,7 +11,7 @@ extern crate byteorder;
 extern crate bit_vec;
 extern crate sha1;
 extern crate rand;
-//extern crate priority_queue;
+extern crate priority_queue;
 
 mod bittorrent;
 

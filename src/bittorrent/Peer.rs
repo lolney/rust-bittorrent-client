@@ -3,7 +3,6 @@ use byteorder::ByteOrder;
 use bit_vec::BitVec;
 use bittorrent::{Piece, PieceData, ParseError};
 use std::mem::transmute;
-use std::cmp::{Ordering};
 use rand::{Rng};
 use rand;
 use std::str::from_utf8;
@@ -18,13 +17,13 @@ pub struct Peer {
     pub time: u32, // time in ms since last communication
     pub bitfield: BitVec,
     pub request_queue: Vec<Piece>,
-    pub download_speed: usize,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Action<'a> {
     Request(Vec<Piece>),
     Write(PieceData<'a>),
+    InterestedChange,
     None,
 }
 
@@ -104,7 +103,6 @@ impl Peer {
             time: 0,
             bitfield: BitVec::new(), // their bitfield
             request_queue: Vec::new(),
-            download_speed: 0,
         }
     }
 
@@ -132,6 +130,10 @@ impl Peer {
         
     }
 
+    pub fn info_hash(&self) -> &[u8; 20] {
+        &self.peer_info.info_hash
+    }
+
     pub fn parse_choke<'a>(&mut self, choke : bool) -> Result<Action<'a>,&'static str> {
         self.peer_choking = choke;
         Ok(Action::None)
@@ -139,7 +141,7 @@ impl Peer {
 
     pub fn parse_interested<'a>(&mut self, interested : bool) -> Result<Action<'a>,&'static str> {
         self.peer_interested = interested;
-        Ok(Action::None)
+        Ok(Action::InterestedChange)
     }
 
     pub fn parse_have<'a>(&mut self, piece_index : u32) -> Result<Action<'a>,&'static str> {
@@ -299,37 +301,6 @@ impl Peer {
     }
 
 }
-
-/// Ordering for unchoking selection
-impl Ord for Peer {
-    fn cmp(&self, other: &Peer) -> Ordering {
-        if (self.peer_interested && other.peer_interested) ||
-            (!self.peer_interested && !other.peer_interested) {
-            return self.download_speed.cmp(&other.download_speed);
-        } else if self.peer_interested && !other.peer_interested {
-            return Ordering::Greater;
-        } else {
-            return Ordering::Less;
-        }
-    }
-}
-
-impl PartialOrd for Peer {
-    fn partial_cmp(&self, other: &Peer) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl PartialEq for Peer {
-    fn eq(&self, other: &Peer) -> bool {
-        match self.cmp(other) {
-            Ordering::Equal => true,
-            _ => false,
-        }
-    }
-}
-
-impl Eq for Peer {}
 
 #[test]
 fn test_simple_messages() {

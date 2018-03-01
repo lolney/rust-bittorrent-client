@@ -8,9 +8,10 @@ use std::io::Error as IOError;
 mod bencoder;
 mod bedecoder;
 mod utils;
+mod torrent;
 mod Peer;
 mod Trackers;
-mod Metainfo;
+mod metainfo;
 mod PeerManager;
 
 /* Describes a decoded benencodable object */
