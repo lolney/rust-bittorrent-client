@@ -134,6 +134,7 @@ impl Peer {
         &self.peer_info.info_hash
     }
 
+    // TODO: these errors should probably be PareErrors
     pub fn parse_choke<'a>(&mut self, choke : bool) -> Result<Action<'a>,&'static str> {
         self.peer_choking = choke;
         Ok(Action::None)
@@ -217,29 +218,29 @@ impl Peer {
         else {message!(1u32, 3u8)}
     }
     
-    pub fn have(&self, piece_index : u32) -> Vec<u8> {
+    pub fn have(piece_index : u32) -> Vec<u8> {
         message!(5u32, 4u8, piece_index)
     }
 
     // Accomodates bitvecs of max length (MAX_U32 - 1)
-    pub fn bitfield(&self, bitvec : BitVec) -> Vec<u8> {
+    pub fn bitfield(bitvec : BitVec) -> Vec<u8> {
         let bytes = bitvec.to_bytes();
         let length = 1 + bytes.len() as u32;
         message_from_bytes!(length, 5u8, bytes)
     }   
 
-    pub fn piece(&self, pd : &PieceData) -> Vec<u8> {
+    pub fn piece(pd : &PieceData) -> Vec<u8> {
         let length = 9 + pd.data.len() as u32;
         message_from_bytes!(length, 7u8, &pd.data, pd.piece.index, pd.piece.begin)
     }
 
     // 2^14 is generally the max length;
     // probably will enforce this when making requests
-    pub fn request(&self, piece : &Piece) -> Vec<u8> {
+    pub fn request(piece : &Piece) -> Vec<u8> {
         message!(13u32, 6u8, piece.index, piece.begin, piece.length)
     }
 
-    pub fn cancel(&self, piece : &Piece) -> Vec<u8> {
+    pub fn cancel(piece : &Piece) -> Vec<u8> {
         message!(13u32, 8u8, piece.index, piece.begin, piece.length)
     }
 

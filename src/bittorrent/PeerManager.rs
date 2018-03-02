@@ -3,9 +3,10 @@ extern crate core;
 use bittorrent::{Peer::Peer, Peer::PeerInfo,
     Peer::Action, metainfo, torrent::Torrent, Piece, ParseError};
 use std::net::{TcpListener, TcpStream};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, Instant};
 use std::error::Error;
 use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
 use priority_queue::PriorityQueue;
 use std::collections::HashMap;
 use std::{thread};
@@ -14,6 +15,8 @@ use std::fmt;
 use std::str::from_utf8;
 use std::fmt::Display;
 use std::cmp::{Ordering};
+use bit_vec::BitVec;
+use std::usize::MAX;
 
 pub struct PeerManager {
     /*
@@ -24,11 +27,6 @@ pub struct PeerManager {
     Must be able to control:
     - Choking/Unchoking
     */
-    // Using a priority queue (as opposed to BinaryHeap) 
-    // to be able to modify arbitrary elements
-    // In either case, can't use the actual peer elements -
-    // mutation not allowed
-    peers : Arc<Mutex<PriorityQueue<[u8 ; 20], PeerPriority>>>,
     torrents : Arc<Mutex<HashMap<[u8 ; 20], Torrent>>>, // u8 is the Info_hash
     peer_id : [u8 ; 20], // our peer id
 }
@@ -66,7 +64,6 @@ macro_rules! acquire_torrent_lock {
 impl PeerManager {
     fn new() -> PeerManager {
         PeerManager{
-            peers: Arc::new(Mutex::new(PriorityQueue::new())),
             torrents: Arc::new(Mutex::new(HashMap::new())),
             peer_id : Peer::gen_peer_id(),
         }
@@ -115,10 +112,16 @@ impl PeerManager {
 
     fn receive(mut peer : Peer, mut stream : TcpStream,
             torrents : Arc<Mutex<HashMap<[u8 ; 20], Torrent>>>,
-            peers : Arc<Mutex<PriorityQueue<[u8 ; 20], PeerPriority>>>) {
+            comm : PeerComm) {
 
         let mut buf = [0; ::MSG_SIZE];
+        let download_size = 0;
+        let start = Instant::now(); // TODO: consider abstracting this away? 
+        // macro for (task, period)
+        let ten_secs = Duration::from_secs(10); 
+
         stream.set_read_timeout(Some(Duration::new(::READ_TIMEOUT, 0)));
+
         loop {
             match stream.read(&mut buf) {
                 Err(e) => {
@@ -136,21 +139,37 @@ impl PeerManager {
                             acquire_torrent_lock!(torrents, peer, torrent);
                             for req in requests {
                                 let pd = torrent.read_block(&req);
-                                stream.write(&peer.piece(&pd));
+                                stream.write(Peer::piece(&pd).as_slice());
                             }
                         },
                         Action::Write(piece) => {
+                            download_size = download_size + piece.piece.length;
                             acquire_torrent_lock!(torrents, peer, torrent);
                             torrent.write_block(piece);
                         },
                         Action::InterestedChange => {
-                            let mut peers = peers.lock().unwrap();
-                            peers.change_priority_by(peer.info_hash(), PeerPriority::flip_interested);
+                            comm.send(PeerUpdate::InterestedChange);
                         }
                         Action::None => {},
                     }
                 },
             };
+
+            // match inc messages
+            match comm.recv() {
+                ManagerUpdate::Request(req) => {
+                    stream.write(req.as_slice());
+                },
+                ManagerUpdate::Choke => {
+                    stream.write(peer.choke(true).as_slice());
+                },
+                ManagerUpdate::Unchoke => {
+                    stream.write(peer.choke(false).as_slice());
+                },
+                ManagerUpdate::Disconnect => {
+                    return:
+                },
+                ManagerUpdate::None => {};
         }
     }
 
@@ -162,32 +181,68 @@ impl PeerManager {
     - Peer with better download rate becomes interest: choke worst uploader
     - Maintain one Peer, regardless of download rate
     */
-    fn manage_choking(peers : Arc<Mutex<PriorityQueue<[u8 ; 20], PeerPriority>>>) {
+    fn manage_choking(recv : mpsc::Receiver<NewPeerMsg>) {
         
         let max_uploaders = 5;
+        let mut peer_priority : PriorityQueue<[u8 ; 20], PeerPriority> = PriorityQueue::new();
+        let mut peers : HashMap<[u8 ; 20], ManagerComm> = HashMap::new();
+
+
+        let start = Instant::now();
+        let ten_secs = Duration::from_secs(10);
 
         loop {
-            let ten_secs = Duration::from_secs(10);
-            thread::sleep(ten_secs);
-
-            let peers = peers.lock().unwrap();
-            let i = 0; // enumerate or into_sorted_iter not compiling
-            for peer in peers.clone().into_sorted_vec() {
-                if i < max_uploaders {
-                    unimplemented!();
-                    // peer.unchoke();
-                } else {
-                    unimplemented!();
-                    //peer.choke();
+            // TODO: consider sleep here 
+            match recv.try_recv() {
+                Ok(newpeer) => {
+                    peer_priority.push(newpeer.peer_id, newpeer.priority);
+                    peers.insert(newpeer.peer_id, newpeer.comm);
+                },
+                Err(err) => match(err) {
+                    mpsc::TryRecvError::Empty => {},
+                    mpsc::TryRecvError::Disconnected => return,
                 }
-                i=i+1;
+            }
+
+            // A message can arrive between the point where we check the queue 
+            // and determine which pieces to request, but it's probably not critical
+            // that this information is 100% up to date - 
+            // this determination will probably not happen whenever possible
+            for (peer_id, comm) in peers.iter_mut() {
+                struct PQ<'s> { pq: &'s Fn(&PQ, mpsc::TryIter<PeerUpdate>) }
+                let process_queue = PQ {
+                    pq: &|pq, iter| {
+                        match iter.next() {
+                            Some(msg) => {
+                                msg.process(&peer_id, &mut peer_priority, comm, &mut peers);
+                                (pq.pq)(pq, iter);
+                            },
+                            None => {}
+                        }
+                    }
+                };
+                (process_queue.pq)(&process_queue, comm.try_iter());
+            }
+            
+            if start.elapsed() >= ten_secs {
+                let i = 0;
+                for (id, priority) in peer_priority.into_sorted_iter() {
+                    let comm = peers.get(&id).unwrap();
+                    if i < max_uploaders {
+                        comm.send(ManagerUpdate::Unchoke);
+                    } else {
+                        comm.send(ManagerUpdate::Choke);
+                    }
+                    i=i+1;
+                }
             }
         }
     }
 
     fn handle(&mut self, port : & 'static str) { // "127.0.0.1:80"
         let torrents = self.torrents.clone();
-        let peers = self.peers.clone();
+
+        let (manager_send, manager_recv) = mpsc::channel();
 
         thread::spawn(move || { // listens for incoming connections
             let listener = TcpListener::bind(port).unwrap();
@@ -195,7 +250,10 @@ impl PeerManager {
                 let torrents = torrents.clone();
                 /*
                 - Hashmap for looking up sender for a given peer
-                - spmc for cancels or reuse hashmap?
+                - Doesn't need to be sent to connection threads
+                - Peers must be accessble to the torrent object,
+                - which decides which peer to request from based
+                on their download rate
                 */
                 /*let (p,c) = unsafe { 
                     bounded_fast::new(10);
@@ -204,14 +262,16 @@ impl PeerManager {
                     Ok(stream) => {
                         match PeerManager::handle_client(&stream, &torrents){
                             Ok(peer) => {
-                                {
-                                    let mut peers = peers.lock().unwrap();
-                                    peers.push(peer.peer_info.info_hash.clone(), PeerPriority::new());
-                                }
-                                let peers = peers.clone();
+                                let (manager_comm, peer_comm) = PeerComm::create();
+                                
+                                manager_send.send(NewPeerMsg {
+                                    peer_id : peer.info_hash().clone(),
+                                    comm : manager_comm,
+                                    priority : PeerPriority::new(),
+                                });
 
                                 thread::spawn(move || { // manages new connection
-                                    PeerManager::receive(peer, stream, torrents, peers);
+                                    PeerManager::receive(peer, stream, torrents, peer_comm);
                                 });
                             }
                             Err(err) => {
@@ -225,13 +285,129 @@ impl PeerManager {
                 }
             }
         });
+
+        // will need to be moved into own thread
+        PeerManager::manage_choking(manager_recv);
     }
 }
 
+/// Instead of locking the peers data structure
+/// and the priority queue on every access,
+/// just send updates as needed.
+/// We just lock for reads and writes, then,
+/// which would be expensive to send anyway
+#[derive(Debug)]
+enum PeerUpdate {
+    DownloadSpeed(usize),
+    InterestedChange,
+    Have(u32),
+    Bitfield(BitVec),
+    Disconnect
+}
+
+impl PeerUpdate {
+    fn process(self, peer_id : &[u8; 20], peers : &mut PriorityQueue<[u8 ; 20], PeerPriority>,
+     comm : &mut ManagerComm, comms : &mut HashMap<[u8 ; 20], ManagerComm> ) {
+        
+        match self {
+            PeerUpdate::DownloadSpeed(speed) => {
+                peers.change_priority_by(peer_id, |priority| priority.set_download(speed));
+            },
+            PeerUpdate::InterestedChange => {
+                peers.change_priority_by(peer_id, PeerPriority::flip_interested);
+            },
+            PeerUpdate::Have(piece_index) => {
+                comm.bitfield.set(piece_index as usize, true);
+            },
+            PeerUpdate::Bitfield(bitfield) => {
+                comm.bitfield = bitfield;
+            },
+            PeerUpdate::Disconnect => {
+                remove(peers, peer_id);
+                comms.remove(peer_id);
+            }
+        }
+    }
+}
+
+fn remove(pq : &mut PriorityQueue<[u8 ; 20], PeerPriority>, id : &[u8 ; 20]) {
+    pq.change_priority_by(id, |priority| priority.set_max());
+    pq.pop();
+}
+
+enum ManagerUpdate {
+    Choke,
+    Unchoke,
+    Request(Vec<u8>),
+    Disconnect,
+    None
+}
+
+struct NewPeerMsg {
+    peer_id : [u8; 20],
+    comm: ManagerComm,
+    priority: PeerPriority,
+}
+
+struct ManagerComm {
+    manager_update_send : mpsc::Sender<ManagerUpdate>,
+    // could instead have only a single copy of this and clone the sender:
+    peer_update_recv: mpsc::Receiver<PeerUpdate>,
+    pub bitfield: BitVec,
+}
+
+struct PeerComm {
+    peer_update_send: mpsc::Sender<PeerUpdate>,
+    manager_update_recv: mpsc::Receiver<ManagerUpdate>,
+}
+
+impl PeerComm {
+    fn create() -> (ManagerComm, PeerComm) {
+        let (peer_update_send, peer_update_recv) = mpsc::channel();
+        let (manager_update_send, manager_update_recv) = mpsc::channel();
+
+        (ManagerComm{
+            manager_update_send : manager_update_send,
+            peer_update_recv : peer_update_recv,
+            bitfield: BitVec::new(),
+        },
+        PeerComm{
+            peer_update_send : peer_update_send,
+            manager_update_recv : manager_update_recv,
+        })
+    }
+
+    fn recv(&self) -> ManagerUpdate {
+        match self.manager_update_recv.try_recv() {
+            Ok(update) => update,
+            Err(err) => match(err) {
+                mpsc::TryRecvError::Empty => ManagerUpdate::None,
+                mpsc::TryRecvError::Disconnected => ManagerUpdate::Disconnect
+            }
+        }
+    }
+
+    fn send(&self, update : PeerUpdate) {
+        self.peer_update_send.send(update);
+    }
+}
+
+impl ManagerComm {
+    fn try_iter(&self) -> mpsc::TryIter<PeerUpdate> {
+        self.peer_update_recv.try_iter()
+    }
+
+    fn send(&self, update : ManagerUpdate) {
+        self.manager_update_send.send(update);
+    }
+}
+
+/// Used by the choking manager to determine priority for 
+/// choking or requests
 #[derive(Debug, Clone)]
 struct PeerPriority {
-    pub peer_interested: bool,
-    pub download_speed: usize,
+    peer_interested: bool,
+    download_speed: usize,
 }
 
 impl PeerPriority {
@@ -246,6 +422,20 @@ impl PeerPriority {
         PeerPriority{
             peer_interested: !peer.peer_interested,
             download_speed: peer.download_speed,
+        }
+    }
+
+    pub fn set_download(self, download_speed : usize) -> PeerPriority {
+        PeerPriority{
+            peer_interested: self.peer_interested,
+            download_speed: download_speed,
+        }
+    }
+
+    pub fn set_max(self) -> PeerPriority {
+        PeerPriority{
+            peer_interested: true,
+            download_speed: MAX,
         }
     }
 }
