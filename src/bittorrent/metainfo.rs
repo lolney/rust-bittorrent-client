@@ -11,6 +11,13 @@ use std::str;
 use std::error::Error;
 use std::io::Error as IOError;
 
+/*
+Ideally the methods in this file would use a macro that enumerated the fields
+of each struct, then used the Bencodable trait to automatically convert to the right type.
+A few this make this difficult - e.g. that BencodeT is implemented as a struct,
+so you can't implement from_BencodeT for each subtype
+*/
+
 /// MetaInfo: Representation of a .torrent file, 
 /// containing hashes of all pieces and other metadata
 #[derive(PartialEq, Debug, Clone)]
@@ -30,39 +37,58 @@ struct Info{
     piece_length : i64,
     pieces: Vec<[u8 ; 20]>, // concatination of all 20-byte SHA-1 hash values
     private: Option<bool>,
-    // TODO: enum for Single-/Multi-file
+    file_info: FileInfo,
 }
 
-#[derive(Debug)]
-struct SingleFileInfo {
-    name: String,
-    length: i64,
-    md5sum: Option<String>
-}
-
-struct MultiFileInfo {
-    name: String,
-    files: Vec<MIFile>,
+#[derive(PartialEq, Debug, Clone)]
+enum FileInfo {
+    SingleFileInfo {
+        name: String,
+        length: i64,
+        md5sum: Option<String>
+    },
+    MultiFileInfo {
+        name: String,
+        files: Vec<MIFile>,
+    }
 }
 
 /// Component of a multi-file info
+#[derive(PartialEq, Debug, Clone)]
 struct MIFile {
     length: i64,
     md5sum: Option<String>,
     path: Vec<String>, 
 }
 
+/// Converts non-optional string fields to BencodeT
 macro_rules! string_field {
     ($t:expr,$hm:expr,$($x:ident),*) => {
-        $($hm.insert(String::from(stringify!($x)), BencodeT::String($t.$x)))*;
+        $($hm.insert(String::from(stringify!($x)), $t.$x.to_BencodeT());)*
     }
 }
 
+macro_rules! insert_elems {
+    ($hm:expr,$($x:ident),*) => {
+        $($hm.insert(String::from(stringify!($x)), $x.clone().to_BencodeT());)*
+    }
+}
+
+/// Used in to_BencodeT to convert optional string fields to BencodeT
 macro_rules! string_optional {
     ($t:expr,$hm:expr,$($x:ident),*) => {
         $(match $t.$x {
             Some(ref string) => {$hm.insert(String::from(stringify!($x)), string.clone().to_BencodeT());},
             None => {},
+        })*
+    }
+}
+
+macro_rules! insert_elems_optional {
+    ($hm:expr,$($x:ident),*) => {
+        $(match $x {
+            &Some(ref string) => {$hm.insert(String::from(stringify!($x)), string.clone().to_BencodeT());},
+            &None => {},
         })*
     }
 }
@@ -77,6 +103,14 @@ macro_rules! get_keys {
         )
     }
 }*/
+
+/// In to_BencodeT: inserts a vector into the hm, converting elems to BencodeT
+fn insert_vector<T : Bencodable>(hm : &mut HashMap<String, BencodeT>, string : String, vec : &Vec<T>) {
+    let bvec = vec.iter().map(|x| x.clone().to_BencodeT()).collect();
+    hm.insert(String::from(string), BencodeT::List(bvec));
+}
+
+/// In from_BencodeT: inserts a vector into the hm, converting elems to BencodeT
 fn elem_from_entry<T : Bencodable>(hm : &HashMap<String, BencodeT>, string : &str) -> Option<T> {
     match hm.get(string){
         Some(string) => Some(T::from_BencodeT(string).unwrap()),
@@ -84,6 +118,7 @@ fn elem_from_entry<T : Bencodable>(hm : &HashMap<String, BencodeT>, string : &st
     }
 }
 
+/// Unwraps double-wrapped Bencoded lists
 fn convert(b : BencodeT) -> Result<String, ParseError> {
     let vec : Vec<String> = _checkVec(Vec::from_BencodeT(&b)?)?;
     Ok(vec[0].clone())
@@ -119,8 +154,8 @@ fn _checkVec<T: Bencodable>(vec : Vec<BencodeT>) -> Result<Vec<T>, ParseError> {
         match T::from_BencodeT(&elem) {
             Ok(val) => { out.push(val) }
             Err(error) => {
-                let string = "Vector is of incorrect type";
-                return Err(ParseError::from_parse(string, error));
+                let string = format!("Vector is of incorrect type : {}", error.description());
+                return Err(ParseError::from_parse_string(string, error));
             }
         }
     }
@@ -134,6 +169,81 @@ fn checkHM<'a>(hm : &'a HashMap<String, BencodeT>, string : &str) -> Result<&'a 
     }
 }
 
+impl FileInfo {
+    pub fn from_BencodeT(hm : &HashMap<String, BencodeT>) -> Result<FileInfo, ParseError> {
+        let name = String::from_BencodeT(hm.get("name").unwrap())?;
+        match hm.get("length") {
+            Some(i) => { // singlefile 
+                Ok(
+                    FileInfo::SingleFileInfo{
+                        name: name,
+                        length: i64::from_BencodeT(i)?,
+                        md5sum: elem_from_entry(hm, "md5sum"),
+                    }
+                )
+            },
+            None => { // multifile
+                let files = hm.get("files").unwrap();
+                Ok(
+                    FileInfo::MultiFileInfo{
+                        name: name,
+                        files: {
+                            let vec = hm.get("files").unwrap();
+                            checkVec(Vec::from_BencodeT(vec)?, |x| MIFile::from_BencodeT(&x))?
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    /// Unlike other to_BencodeT methods, this just fills the hm,
+    /// since FileInfo is just a component of FileInfo
+    pub fn to_BencodeT(&self, hm : &mut HashMap<String, BencodeT>) {
+
+        match self {
+            &FileInfo::SingleFileInfo{ref name, length, ref md5sum} => {
+                insert_elems!(hm, name, length);
+                insert_elems_optional!(hm, md5sum);
+            },
+            &FileInfo::MultiFileInfo{ref name, ref files} => {
+                insert_elems!(hm, name);
+                insert_vector(hm, "files".to_string(), &files);
+            },
+        }
+    }
+}
+
+impl Bencodable for MIFile {
+
+    fn to_BencodeT(self) -> BencodeT {
+        let mut hm = HashMap::new();
+
+        string_field!(self, hm, length);
+        string_optional!(self, hm, md5sum);
+        insert_vector(&mut hm, "path".to_string(), &self.path);
+
+        BencodeT::Dictionary(hm)
+    }
+
+    fn from_BencodeT(bencode_t : &BencodeT) -> Result<MIFile, ParseError> {
+        match bencode_t {
+            &BencodeT::Dictionary(ref hm) => Ok(
+                MIFile{
+                    length : i64::from_BencodeT(hm.get("length").unwrap())?,
+                    md5sum : elem_from_entry(hm, "md5sum"),
+                    path : {
+                        let vec = hm.get("path").unwrap();
+                        checkVec(Vec::from_BencodeT(vec)?, |x| String::from_BencodeT(&x))?
+                    }
+                }
+            ),
+            _ => Err(ParseError::new_str("Multifile info not formatted as dictionary"))
+        }
+    }
+}
+
+// TODO: error handling when a field isn't present
 impl MetaInfo {
 
     pub fn info_hash(&self) -> [u8 ; 20] {
@@ -190,8 +300,7 @@ impl MetaInfo {
 
         match &self.announce_list {
             &Some(ref vec) => {
-                let bvec = vec.iter().map(|x| BencodeT::String(x.clone())).collect();
-                hm.insert(String::from("announce-list"), BencodeT::List(bvec));
+                insert_vector(&mut hm, "announce-list".to_string(), vec);
             }
             &None => {} 
         }
@@ -216,6 +325,7 @@ impl Info {
                             Info::split_hashes(string)?
                         },
                         private : elem_from_entry(hm, "private"),
+                        file_info : FileInfo::from_BencodeT(hm)?,
                     }
                 )
             },
@@ -258,6 +368,8 @@ impl Info {
         hm.insert(String::from("piece length"), self.piece_length.to_BencodeT());
         hm.insert(String::from("pieces"), Info::hashes_to_string(&self.pieces));
         string_optional!(self, hm, private);
+
+        self.file_info.to_BencodeT(&mut hm);
 
         BencodeT::Dictionary(hm)
     }

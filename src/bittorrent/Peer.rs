@@ -138,6 +138,10 @@ impl Peer {
         &self.peer_info.peer_id
     }
 
+    pub fn peer_id_string(&self) -> String {
+        String::from(from_utf8(&self.peer_info.peer_id).unwrap())
+    }
+
     // TODO: these errors should probably be PareErrors
     pub fn parse_choke<'a>(&mut self, choke : bool) -> Result<Action<'a>,&'static str> {
         self.peer_choking = choke;
@@ -340,17 +344,17 @@ fn test_parse_have() {
     let mut peer = Peer::new(PeerInfo::new());
 
     let have = message!(5u32, 4u8, 0u32);
-    assert_eq!(peer.have(0), have);
+    assert_eq!(Peer::have(0), have);
     assert_eq!(peer.parse_message(&have), Err("Have not received bitfield from Peer"));
     assert_eq!(peer.bitfield.get(0), None);
 
     let bitfield = message!(5u32, 5u8, 0b01000000000000000000000000000000 as u32);
-    assert_eq!(peer.bitfield(BitVec::from_bytes(&[0b01000000, 0b00000000, 0b00000000, 0b00000000])), bitfield);
+    assert_eq!(Peer::bitfield(BitVec::from_bytes(&[0b01000000, 0b00000000, 0b00000000, 0b00000000])), bitfield);
     peer.parse_message(&bitfield);
     assert_eq!(peer.bitfield.get(1).unwrap(), true);
 
     let have = message!(5u32, 4u8, 32u32);
-    assert_eq!(peer.have(32), have);
+    assert_eq!(Peer::have(32), have);
     assert_eq!(peer.parse_message(&have), Err("Received have message with piece index that exceeds number of pieces"));
 
     let bitfield = message!(9u32, 5u8, 0b10000000000000000000000000000000 as u32, 0b10000000000000000000000000000000 as u32);
@@ -386,7 +390,7 @@ fn test_parse_piece() {
     let piece = Piece{index: 0u32, begin: 0u32, length: 12u32};
     let piece_data = PieceData{piece: piece, data: &bytes};
 
-    assert_eq!(peer.piece(&piece_data), message);
+    assert_eq!(Peer::piece(&piece_data), message);
 
     let result = peer.parse_message(&message);
     assert_eq!(result, Ok(Action::Write(piece_data)));

@@ -88,7 +88,7 @@ impl fmt::Display for ParseError {
     }
 }
 
-pub trait Bencodable {
+pub trait Bencodable : Clone {
     fn to_BencodeT(self) -> BencodeT;
     fn from_BencodeT(bencode_t : &BencodeT) -> Result<Self, ParseError> where Self: Sized;
 }
