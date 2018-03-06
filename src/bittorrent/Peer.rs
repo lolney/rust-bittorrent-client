@@ -134,6 +134,10 @@ impl Peer {
         &self.peer_info.info_hash
     }
 
+    pub fn peer_id(&self) -> &[u8; 20] {
+        &self.peer_info.peer_id
+    }
+
     // TODO: these errors should probably be PareErrors
     pub fn parse_choke<'a>(&mut self, choke : bool) -> Result<Action<'a>,&'static str> {
         self.peer_choking = choke;
@@ -402,7 +406,7 @@ fn test_parse_handshake() {
 
 #[derive(Debug)]
 pub struct PeerInfo{
-    pub peer_id: String,
+    pub peer_id: [u8 ; 20],
     pub info_hash: [u8 ; 20],
     pub ip: String,
     pub port: i64,
@@ -411,7 +415,7 @@ pub struct PeerInfo{
 impl PeerInfo {
     fn new() -> PeerInfo {
         PeerInfo{
-            peer_id: String::from(""),
+            peer_id: Default::default(),
             info_hash: Default::default(),
             ip: String::from("127.0.0.1"),
             port: 8000,
