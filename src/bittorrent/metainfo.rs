@@ -33,8 +33,8 @@ pub struct MetaInfo {
 
 /// Common traits to single- and multi- fileinfo
 #[derive(PartialEq, Debug, Clone)]
-struct Info{
-    piece_length : i64,
+pub struct Info{
+    pub piece_length : i64,
     pieces: Vec<[u8 ; 20]>, // concatination of all 20-byte SHA-1 hash values
     private: Option<bool>,
     file_info: FileInfo,
@@ -251,6 +251,10 @@ impl MetaInfo {
         let mut sha = Sha1::new();
         sha.update(bstring.as_bytes());
         sha.digest().bytes()
+    }
+
+    pub fn info(&self) -> &Info {
+        &self.info
     }
 
     pub fn read(infile : String) -> Result<MetaInfo, ParseError> {

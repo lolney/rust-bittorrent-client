@@ -185,9 +185,19 @@ pub struct Piece {
     length : u32,
 }
 
+impl Piece {
+    fn new(index : u32, begin : u32, length : u32) -> Piece {
+        Piece {
+            index : index,
+            begin : begin,
+            length : length,
+        }
+    }
+}
+
 #[derive(PartialEq, Debug, Clone)]
-pub struct PieceData<'a>{
+pub struct PieceData {
     piece : Piece,
     //info_hash : [u8 ; 20], // note: not sure why this was here, but leaving in case
-    data : & 'a[u8],
+    data : Vec<u8>,
 }

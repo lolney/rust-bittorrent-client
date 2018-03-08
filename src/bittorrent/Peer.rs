@@ -20,9 +20,9 @@ pub struct Peer {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum Action<'a> {
+pub enum Action {
     Request(Vec<Piece>),
-    Write(PieceData<'a>),
+    Write(PieceData),
     InterestedChange,
     None,
 }
@@ -106,7 +106,7 @@ impl Peer {
         }
     }
 
-    pub fn parse_message<'a>(&mut self, msg : &'a [u8]) -> Result<Action<'a>,&'static str> {
+    pub fn parse_message(&mut self, msg : &[u8]) -> Result<Action,&'static str> {
         self.time = 0;
         let len : u32 = BigEndian::read_u32(&msg[0 .. 4]); // parse u32
         if len == 0 {Ok(Action::None)} // keep alive
@@ -143,17 +143,17 @@ impl Peer {
     }
 
     // TODO: these errors should probably be PareErrors
-    pub fn parse_choke<'a>(&mut self, choke : bool) -> Result<Action<'a>,&'static str> {
+    pub fn parse_choke(&mut self, choke : bool) -> Result<Action,&'static str> {
         self.peer_choking = choke;
         Ok(Action::None)
     }
 
-    pub fn parse_interested<'a>(&mut self, interested : bool) -> Result<Action<'a>,&'static str> {
+    pub fn parse_interested(&mut self, interested : bool) -> Result<Action,&'static str> {
         self.peer_interested = interested;
         Ok(Action::InterestedChange)
     }
 
-    pub fn parse_have<'a>(&mut self, piece_index : u32) -> Result<Action<'a>,&'static str> {
+    pub fn parse_have(&mut self, piece_index : u32) -> Result<Action,&'static str> {
         if self.bitfield.is_empty() {
             return Err("Have not received bitfield from Peer");
         }
@@ -164,7 +164,7 @@ impl Peer {
         Ok(Action::None)
     }
 
-    pub fn  parse_bitfield<'a>(&mut self, bitfield : &[u8]) -> Result<Action<'a>,&'static str>{
+    pub fn  parse_bitfield(&mut self, bitfield : &[u8]) -> Result<Action,&'static str>{
         self.bitfield = BitVec::from_bytes(bitfield);
         Ok(Action::None)
     }
@@ -178,7 +178,7 @@ impl Peer {
     }
 
     // TODO: error when exceeding 2^14?
-    pub fn parse_request<'a>(&mut self, msg : &[u8]) -> Result<Action<'a>,&'static str> {
+    pub fn parse_request(&mut self, msg : &[u8]) -> Result<Action,&'static str> {
         let piece = self.parse_piece_generic(msg);
         self.request_queue.push(piece);
 
@@ -191,17 +191,19 @@ impl Peer {
     }
     
     // TODO: error when exceeding 2^14?
-    pub fn parse_piece<'a>(&mut self, msg : &'a [u8], len : u32) -> Result<Action<'a>,&'static str> {
+    pub fn parse_piece(&mut self, msg : &[u8], len : u32) -> Result<Action,&'static str> {
         let index = BigEndian::read_u32(&msg[5 .. 9]);
         let begin = BigEndian::read_u32(&msg[9 .. 13]);
         let block = &msg[13 .. len as usize];
 
         let piece = Piece{index: index, begin: begin, length: len - 13};
-        let piece_data = PieceData{piece: piece, data: block};
+        let mut vec = Vec::new();
+        vec.extend_from_slice(block);
+        let piece_data = PieceData{piece: piece, data: vec};
         Ok(Action::Write(piece_data))
     }
 
-    pub fn parse_cancel<'a>(&mut self, msg : &[u8]) -> Result<Action<'a>,&'static str> {
+    pub fn parse_cancel(&mut self, msg : &[u8]) -> Result<Action,&'static str> {
         let piece = self.parse_piece_generic(msg);
         match self.request_queue.remove_item(&piece) {
             Some(obj) => Ok(Action::None),
@@ -209,7 +211,7 @@ impl Peer {
         }
     }
 
-    pub fn parse_port<'a>(&mut self) -> Result<Action<'a>,&'static str> {
+    pub fn parse_port(&mut self) -> Result<Action,&'static str> {
         unimplemented!();
         Ok(Action::None)
     }
@@ -239,7 +241,7 @@ impl Peer {
 
     pub fn piece(pd : &PieceData) -> Vec<u8> {
         let length = 9 + pd.data.len() as u32;
-        message_from_bytes!(length, 7u8, &pd.data, pd.piece.index, pd.piece.begin)
+        message_from_bytes!(length, 7u8, &pd.data.as_slice(), pd.piece.index, pd.piece.begin)
     }
 
     // 2^14 is generally the max length;
@@ -388,7 +390,7 @@ fn test_parse_piece() {
     let message = message_calc_length!(7u8, 0u32, 0u32, 1u32, 2u32, 3u32);
     let bytes = byte_slice_from_u32s!(1u32, 2u32, 3u32);
     let piece = Piece{index: 0u32, begin: 0u32, length: 12u32};
-    let piece_data = PieceData{piece: piece, data: &bytes};
+    let piece_data = PieceData{piece: piece, data: bytes};
 
     assert_eq!(Peer::piece(&piece_data), message);
 

@@ -323,14 +323,22 @@ impl PeerManager {
                             Action::Request(requests) => {
                                 acquire_torrent_lock!(torrents, peer, torrent);
                                 for req in requests {
-                                    let pd = torrent.read_block(&req);
-                                    stream.write(Peer::piece(&pd).as_slice());
+                                    match torrent.read_block(&req) {
+                                        Ok(ref pd) => {
+                                            stream.write(Peer::piece(&pd).as_slice());
+                                        },
+                                        Err(err) => {
+                                            error!("Error while reading block to send to peer {:?}: {}",
+                                                peer.peer_id(), err);
+                                        }
+                                    }
+                                    
                                 }
                             },
                             Action::Write(piece) => {
                                 download_size = download_size + piece.piece.length;
                                 acquire_torrent_lock!(torrents, peer, torrent);
-                                torrent.write_block(piece);
+                                torrent.write_block(&piece);
                             },
                             Action::InterestedChange => {
                                 comm.send(PeerUpdate::InterestedChange);

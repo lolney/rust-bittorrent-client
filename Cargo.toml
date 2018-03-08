@@ -12,3 +12,7 @@ bit-vec = "0.4.4"
 log = "0.3.8"
 sha1 = "0.2.0"
 rand = "0.4"
+
+[[bin]]
+name = "rust-bittorrent-client"
+path = "src/main.rs"
