@@ -35,13 +35,13 @@ pub struct MetaInfo {
 #[derive(PartialEq, Debug, Clone)]
 pub struct Info{
     pub piece_length : i64,
-    pieces: Vec<[u8 ; 20]>, // concatination of all 20-byte SHA-1 hash values
-    private: Option<bool>,
-    file_info: FileInfo,
+    pub pieces: Vec<[u8 ; 20]>, // concatination of all 20-byte SHA-1 hash values
+    pub private: Option<bool>,
+    pub file_info: FileInfo,
 }
 
 #[derive(PartialEq, Debug, Clone)]
-enum FileInfo {
+pub enum FileInfo {
     SingleFileInfo {
         name: String,
         length: i64,
@@ -55,10 +55,10 @@ enum FileInfo {
 
 /// Component of a multi-file info
 #[derive(PartialEq, Debug, Clone)]
-struct MIFile {
-    length: i64,
-    md5sum: Option<String>,
-    path: Vec<String>, 
+pub struct MIFile {
+    pub length: i64,
+    pub md5sum: Option<String>,
+    pub path: Vec<String>, 
 }
 
 /// Converts non-optional string fields to BencodeT
@@ -214,6 +214,12 @@ impl FileInfo {
     }
 }
 
+impl MIFile {
+    pub fn path(&self) -> String {
+        self.path.iter().fold(String::new(), |str, elem| format!("{}/{}", str, elem))
+    }
+}
+
 impl Bencodable for MIFile {
 
     fn to_BencodeT(self) -> BencodeT {
@@ -241,6 +247,7 @@ impl Bencodable for MIFile {
             _ => Err(ParseError::new_str("Multifile info not formatted as dictionary"))
         }
     }
+
 }
 
 // TODO: error handling when a field isn't present

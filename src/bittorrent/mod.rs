@@ -186,12 +186,16 @@ pub struct Piece {
 }
 
 impl Piece {
-    fn new(index : u32, begin : u32, length : u32) -> Piece {
+    pub fn new(index : u32, begin : u32, length : u32) -> Piece {
         Piece {
             index : index,
             begin : begin,
             length : length,
         }
+    }
+
+    pub fn file_index(&self, piece_length : i64) -> i64 {
+        self.begin as i64 + (self.index as i64 * piece_length)
     }
 }
 

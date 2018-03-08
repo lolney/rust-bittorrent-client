@@ -1,4 +1,4 @@
-use bittorrent::{Piece, PieceData, metainfo::MetaInfo, ParseError};
+use bittorrent::{Piece, PieceData, metainfo::MetaInfo, ParseError, metainfo::FileInfo, metainfo::MIFile};
 use std::collections::HashMap;
 use bit_vec::BitVec;
 use std::io::Error as IOError;
@@ -6,6 +6,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Write, Seek, SeekFrom, Read};
 use rand::random;
 use std::collections::hash_map::Entry;
+use std::cmp;
 
 /* Need to:
 - Maintain file access to downloading/uploading data; 
@@ -27,8 +28,8 @@ pub struct Torrent {
 
 struct FilePiece {
     path: String,
-    begin: u32,
-    length: u32,
+    begin: i64, // following convention of i64 for files
+    length: i64,
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -63,12 +64,13 @@ impl Torrent {
 
     /// For each of the files specified in the torrent file, create it
     pub fn create_files() -> Result<(), IOError>{
+        // May want to keep track of a mapping of file index -> path
         unimplemented!();
     }
 
     pub fn write_block(&mut self, piece : &PieceData) -> Result<(), IOError>{
         
-        for file in self.get_files(&piece.piece).iter() {
+        for file in self.map_files(&piece.piece).iter() {
 
             let mut options = OpenOptions::new();
             options.write(true);
@@ -89,7 +91,7 @@ impl Torrent {
     pub fn read_block(&mut self, piece : &Piece) -> Result<PieceData, IOError> {
         
         let mut vec : Vec<u8> = Vec::new();
-        for file in self.get_files(piece).iter() {
+        for file in self.map_files(piece).iter() {
 
             let mut buf = vec![0; file.length as usize];
             let mut fp = File::open(file.path.clone())?;
@@ -188,9 +190,51 @@ impl Torrent {
         }
     }
 
-    fn get_files(&self, piece : &Piece) -> Vec<FilePiece> {
-        let vec = Vec::new();
-        unimplemented!();
+    /// Map piece -> files
+    fn map_files(&self, piece : &Piece) -> Vec<FilePiece> {
+
+        let mut vec = Vec::new();
+        let piece_length = self.metainfo.info().piece_length;
+
+        match &self.metainfo.info().file_info {
+            &FileInfo::SingleFileInfo{ref name, length, ref md5sum} => {
+                vec.push(FilePiece{
+                    path: name.clone(), // TODO : change to index so not dependent on path?
+                    begin: piece.file_index(piece_length),
+                    length: piece.length as i64,
+                });
+            },
+            &FileInfo::MultiFileInfo{ref name, ref files} => {
+
+                let mut iter = files.iter();
+                let mut total : i64 = 0;
+                let index = piece.file_index(piece_length);
+                let mut file = iter.next().unwrap();
+
+                // Find the first file
+                while (total + file.length) < index {
+                    total += file.length;
+                    file = iter.next().unwrap();
+                }
+
+                // Apportion the load of the piece
+                let mut remaining = piece.length as i64;
+                while remaining > 0 {
+                    let index_in_file = index - total;
+                    let load = cmp::min(remaining, file.length - index_in_file);
+                    remaining -= load as i64;
+                    total += file.length;
+                    file = iter.next().unwrap();
+
+                    vec.push(FilePiece{
+                        path: file.path(),
+                        begin: index_in_file,
+                        length: load,
+                    })
+                }
+            },
+        }
+        
         return vec;
     }
 }
@@ -264,6 +308,11 @@ fn test_insert_piece() {
 
     torrent.insert_piece(&p8);
     test_vec(&torrent, &vec!(B(0),E(12)));
+}
+
+#[test]
+fn test_map_files() {
+    
 }
 
 /*
