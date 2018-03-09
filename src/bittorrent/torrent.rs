@@ -2,7 +2,7 @@ use bittorrent::{ParseError, Piece, PieceData, metainfo::BTFile, metainfo::MetaI
 use std::collections::HashMap;
 use bit_vec::BitVec;
 use std::io::Error as IOError;
-use std::fs::{File, OpenOptions};
+use std::fs::{create_dir_all, remove_dir_all, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use rand::random;
 use std::collections::hash_map::Entry;
@@ -25,7 +25,7 @@ pub struct Torrent {
     metainfo: MetaInfo,
     bitfield: BitVec,
     map: HashMap<u32, Vec<DLMarker>>, // Piece indices -> indices indicated downloaded parts
-    files: Option<Vec<BTFile>>,
+    files: Vec<BTFile>,
 }
 
 struct FilePiece {
@@ -50,14 +50,17 @@ impl DLMarker {
 }
 
 impl Torrent {
-    pub fn new(path: String) -> Result<Torrent, ParseError> {
-        match MetaInfo::read(path) {
-            Ok(metainfo) => Ok(Torrent {
-                metainfo: metainfo,
-                bitfield: BitVec::new(),
-                map: HashMap::new(),
-                files: None,
-            }),
+    pub fn new(infofile: String, download_dir: String) -> Result<Torrent, ParseError> {
+        match MetaInfo::read(infofile) {
+            Ok(metainfo) => {
+                let files = metainfo.info().file_info.as_BTFiles(download_dir);
+                Ok(Torrent {
+                    metainfo: metainfo,
+                    bitfield: BitVec::new(),
+                    map: HashMap::new(),
+                    files: files,
+                })
+            }
             Err(e) => Err(ParseError::from_parse_string(
                 String::from("Error adding torrent"),
                 e,
@@ -65,22 +68,15 @@ impl Torrent {
         }
     }
 
-    /// For each of the files specified in the torrent file, create it with root at path
-    pub fn create_files(&self, path: PathBuf) -> Result<(), IOError> {
-        let mut files = self.files_vec();
-
-        for file in files.iter_mut() {
-            file.path = path.join(file.path.clone());
-            // TODO: need to test how this works with directories
+    /// For each of the files specified in the torrent file, create it and parent directories
+    pub fn create_files(&self) -> Result<(), IOError> {
+        for file in self.files.iter() {
+            create_dir_all(file.path.parent().unwrap())?;
             let f = File::create(file.path.clone())?;
             f.set_len(file.length as u64)?;
         }
 
         Ok(())
-    }
-
-    fn files_vec(&self) -> Vec<BTFile> {
-        self.metainfo.info().file_info.as_BTFiles()
     }
 
     pub fn write_block(&mut self, piece: &PieceData) -> Result<(), IOError> {
@@ -212,10 +208,10 @@ impl Torrent {
         let mut vec = Vec::new();
         let piece_length = self.metainfo.info().piece_length;
 
-        let mut iter = self.files.as_ref().unwrap().iter();
+        let mut iter = self.files.iter();
         let mut total: i64 = 0;
         let index = piece.file_index(piece_length);
-        let mut file : &BTFile = iter.next().unwrap();
+        let mut file: &BTFile = iter.next().unwrap();
 
         // Find the first file
         while (total + (*file).length) < index {
@@ -276,7 +272,7 @@ fn test_insert_piece() {
     let p7 = Piece::new(0, 10, 1); // 0000000000#
     let p8 = Piece::new(0, 0, 12); // ############
 
-    let mut torrent = Torrent::new("bible.torrent".to_string()).unwrap();
+    let mut torrent = Torrent::new("test/bible.torrent".to_string(), String::new()).unwrap();
 
     torrent.insert_piece(&p1);
     torrent.insert_piece(&p7);
@@ -317,7 +313,17 @@ fn test_insert_piece() {
 fn test_map_files() {}
 
 #[test]
-fn test_create_files() {}
+fn test_create_files() {
+    remove_dir_all(PathBuf::from("test/test"));
+    let download_dir = String::from("test/test");
+    let fnames = vec!["test/torrent.torrent", "test/bible.torrent"];
+    let test_files = fnames
+        .iter()
+        .map(|x| Torrent::new(x.to_string(), download_dir.clone()).unwrap());
+    for torrent in test_files {
+        torrent.create_files().unwrap();
+    }
+}
 
 /*
 #[test] 

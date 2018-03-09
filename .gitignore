@@ -3,3 +3,5 @@
 *.torrent
 
 \.vscode/
+
+test/test/

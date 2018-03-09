@@ -264,8 +264,8 @@ impl PeerManager {
         }
     }
 
-    pub fn add_torrent(&mut self, metainfo_path: String) -> Result<(), ParseError> {
-        match Torrent::new(metainfo_path) {
+    pub fn add_torrent(&mut self, metainfo_path: String, download_path : String) -> Result<(), ParseError> {
+        match Torrent::new(metainfo_path, download_path) {
             Ok(torrent) => {
                 let mut torrents = self.torrents.lock().unwrap();
                 let info_hash = torrent.info_hash();

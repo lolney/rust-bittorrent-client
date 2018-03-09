@@ -25,7 +25,7 @@ pub struct MetaInfo {
     info: Info,
     announce: Option<String>,
     announce_list: Option<Vec<String>>,
-    creation_date: Option<String>,
+    creation_date: Option<i64>,
     comment: Option<String>,
     created_by: Option<String>,
     encoding: Option<String>,
@@ -231,8 +231,9 @@ impl FileInfo {
         }
     }
 
-    pub fn as_BTFiles(&self) -> Vec<BTFile> {
+    pub fn as_BTFiles(&self, root_directory: String) -> Vec<BTFile> {
         let mut vec = Vec::new();
+        let root = PathBuf::from(root_directory);
 
         match self {
             &FileInfo::SingleFileInfo {
@@ -243,17 +244,18 @@ impl FileInfo {
                 vec.push(BTFile {
                     length: length,
                     md5sum: md5sum.clone(),
-                    path: PathBuf::from(name),
+                    path: root.join(name).join(PathBuf::from(name)),
                 });
             }
             &FileInfo::MultiFileInfo {
                 ref name,
                 ref files,
             } => for file in files {
+                let path = root.join(name).join(file.as_path());
                 vec.push(BTFile {
                     length: file.length,
                     md5sum: file.md5sum.clone(),
-                    path: file.as_path(),
+                    path: path,
                 });
             },
         }
@@ -264,9 +266,9 @@ impl FileInfo {
 
 impl MIFile {
     pub fn path(&self) -> String {
-        self.path
-            .iter()
-            .fold(String::new(), |str, elem| format!("{}/{}", str, elem))
+        let mut iter = self.path.iter();
+        let first = iter.next().unwrap();
+        iter.fold(first.clone(), |str, elem| format!("{}/{}", str, elem))
     }
 
     pub fn as_path(&self) -> PathBuf {
@@ -449,9 +451,9 @@ impl Info {
 
 #[test]
 fn test_read_write() {
-    let metainfo = MetaInfo::read("bible.torrent".to_string()).unwrap();
-    metainfo.write("bible-out.torrent".to_string());
-    let metainfo2 = MetaInfo::read("bible-out.torrent".to_string()).unwrap();
+    let metainfo = MetaInfo::read("test/bible.torrent".to_string()).unwrap();
+    metainfo.write("test/bible-out.torrent".to_string());
+    let metainfo2 = MetaInfo::read("test/bible-out.torrent".to_string()).unwrap();
     assert_eq!(metainfo, metainfo2);
 }
 

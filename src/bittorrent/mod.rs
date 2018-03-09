@@ -92,6 +92,14 @@ pub trait Bencodable: Clone {
         Self: Sized;
 }
 
+macro_rules! parse_error {
+    ($ ( $ arg : tt ), *) => {
+        ParseError::new(
+            format!($( $arg),*)
+        )
+    }
+}
+
 impl Bencodable for String {
     fn to_BencodeT(self) -> BencodeT {
         BencodeT::String(self)
@@ -99,16 +107,18 @@ impl Bencodable for String {
     fn from_BencodeT(bencode_t: &BencodeT) -> Result<String, ParseError> {
         match bencode_t {
             &BencodeT::String(ref string) => Ok(string.clone()),
-            &BencodeT::Integer(int) => Err(ParseError::new_str(
-                "Attempted to convert int BencodeT to string",
+            &BencodeT::Integer(int) => Err(parse_error!(
+                "Attempted to convert int BencodeT to string: {:?}",
+                int
             )),
-            &BencodeT::Dictionary(ref hm) => Err(ParseError::new_str(
-                "Attempted to convert dict BencodeT to string",
+            &BencodeT::Dictionary(ref hm) => Err(parse_error!(
+                "Attempted to convert dict BencodeT to string: {:?}",
+                hm
             )),
-            &BencodeT::List(ref vec) => Err(ParseError::new(format!(
+            &BencodeT::List(ref vec) => Err(parse_error!(
                 "Attempted to convert list BencodeT to string: {:?}",
                 vec
-            ))),
+            )),
             _ => Err(ParseError::new_str(
                 "Attempted to convert non-string BencodeT to string",
             )),
