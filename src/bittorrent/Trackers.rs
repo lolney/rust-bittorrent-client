@@ -1,6 +1,6 @@
 /* Tracker communication handled here
 */
-use bittorrent::Peer::{Peer};
+use bittorrent::Peer::Peer;
 
 struct Trackers {
     urls: Vec<Tracker>,
@@ -17,12 +17,8 @@ struct Tracker {
 }
 
 impl Tracker {
-    pub fn announce() {
-
-    }
+    pub fn announce() {}
 
     /// Queries the state of a given torrent
-    pub fn scrape() {
-
-    }
+    pub fn scrape() {}
 }

@@ -1,12 +1,13 @@
-use bittorrent::{Piece, PieceData, metainfo::MetaInfo, ParseError, metainfo::FileInfo, metainfo::MIFile};
+use bittorrent::{ParseError, Piece, PieceData, metainfo::BTFile, metainfo::MetaInfo};
 use std::collections::HashMap;
 use bit_vec::BitVec;
 use std::io::Error as IOError;
 use std::fs::{File, OpenOptions};
-use std::io::{Write, Seek, SeekFrom, Read};
+use std::io::{Read, Seek, SeekFrom, Write};
 use rand::random;
 use std::collections::hash_map::Entry;
 use std::cmp;
+use std::path::PathBuf;
 
 /* Need to:
 - Maintain file access to downloading/uploading data; 
@@ -23,11 +24,12 @@ so also need to abstract away file boundaries
 pub struct Torrent {
     metainfo: MetaInfo,
     bitfield: BitVec,
-    map : HashMap<u32, Vec<DLMarker>>, // Piece indices -> indices indicated downloaded parts
+    map: HashMap<u32, Vec<DLMarker>>, // Piece indices -> indices indicated downloaded parts
+    files: Option<Vec<BTFile>>,
 }
 
 struct FilePiece {
-    path: String,
+    path: PathBuf,
     begin: i64, // following convention of i64 for files
     length: i64,
 }
@@ -48,36 +50,47 @@ impl DLMarker {
 }
 
 impl Torrent {
-
-    pub fn new(path : String) -> Result<Torrent, ParseError> {
+    pub fn new(path: String) -> Result<Torrent, ParseError> {
         match MetaInfo::read(path) {
-            Ok(metainfo) => {
-                Ok(Torrent {
-                    metainfo : metainfo,
-                    bitfield : BitVec::new(),
-                    map : HashMap::new(),
-                })
-            },
-            Err(e) => Err(ParseError::from_parse_string(String::from("Error adding torrent"), e))
+            Ok(metainfo) => Ok(Torrent {
+                metainfo: metainfo,
+                bitfield: BitVec::new(),
+                map: HashMap::new(),
+                files: None,
+            }),
+            Err(e) => Err(ParseError::from_parse_string(
+                String::from("Error adding torrent"),
+                e,
+            )),
         }
     }
 
-    /// For each of the files specified in the torrent file, create it
-    pub fn create_files() -> Result<(), IOError>{
-        // May want to keep track of a mapping of file index -> path
-        unimplemented!();
+    /// For each of the files specified in the torrent file, create it with root at path
+    pub fn create_files(&self, path: PathBuf) -> Result<(), IOError> {
+        let mut files = self.files_vec();
+
+        for file in files.iter_mut() {
+            file.path = path.join(file.path.clone());
+            // TODO: need to test how this works with directories
+            let f = File::create(file.path.clone())?;
+            f.set_len(file.length as u64)?;
+        }
+
+        Ok(())
     }
 
-    pub fn write_block(&mut self, piece : &PieceData) -> Result<(), IOError>{
-        
-        for file in self.map_files(&piece.piece).iter() {
+    fn files_vec(&self) -> Vec<BTFile> {
+        self.metainfo.info().file_info.as_BTFiles()
+    }
 
+    pub fn write_block(&mut self, piece: &PieceData) -> Result<(), IOError> {
+        for file in self.map_files(&piece.piece).iter() {
             let mut options = OpenOptions::new();
             options.write(true);
 
-            let mut fp = match options.open(file.path.clone()){
+            let mut fp = match options.open(file.path.clone()) {
                 Ok(f) => f,
-                Err(err) => File::create(file.path.clone())? // LOG: had to create file
+                Err(_) => File::create(file.path.clone())?, // LOG: had to create file
             };
             fp.seek(SeekFrom::Start(file.begin as u64))?;
             fp.write_all(piece.data.as_slice());
@@ -88,11 +101,9 @@ impl Torrent {
         Ok(())
     }
 
-    pub fn read_block(&mut self, piece : &Piece) -> Result<PieceData, IOError> {
-        
-        let mut vec : Vec<u8> = Vec::new();
+    pub fn read_block(&mut self, piece: &Piece) -> Result<PieceData, IOError> {
+        let mut vec: Vec<u8> = Vec::new();
         for file in self.map_files(piece).iter() {
-
             let mut buf = vec![0; file.length as usize];
             let mut fp = File::open(file.path.clone())?;
 
@@ -101,7 +112,7 @@ impl Torrent {
             vec.extend_from_slice(buf.as_slice());
         }
 
-        Ok(PieceData{
+        Ok(PieceData {
             piece: piece.clone(),
             data: vec,
         })
@@ -111,33 +122,37 @@ impl Torrent {
         return self.metainfo.info_hash();
     }
 
-    /// Determine if dl_marker is in a downloaded area 
+    /// Determine if dl_marker is in a downloaded area
     /// exclusive; inclusive if end of range and begin flag is true or beginning and begin is false)
     /// of the piece given by piece_index
-    fn in_shaded(&self, piece_index : &u32, dlmarker : &u32, begin : bool) -> bool {
+    fn in_shaded(&self, piece_index: &u32, dlmarker: &u32, begin: bool) -> bool {
         let mut shaded = false;
-        let vec : &Vec<DLMarker> = self.map.get(piece_index).unwrap();
-            
+        let vec: &Vec<DLMarker> = self.map.get(piece_index).unwrap();
+
         for index in vec {
             match index {
                 &DLMarker::Begin(ref val) => {
-                    if val == dlmarker && begin {break;}
-                    else if val == dlmarker && !begin {
+                    if val == dlmarker && begin {
+                        break;
+                    } else if val == dlmarker && !begin {
                         shaded = true;
                         break;
-                    }
-                    else if val > dlmarker {break;}
-                    shaded = true;
-                },
-                &DLMarker::End(ref val) => {
-                    if val == dlmarker && begin { break;}
-                    else if val == dlmarker && !begin { 
-                        shaded = false;
+                    } else if val > dlmarker {
                         break;
                     }
-                    else if val > dlmarker {break;}
+                    shaded = true;
+                }
+                &DLMarker::End(ref val) => {
+                    if val == dlmarker && begin {
+                        break;
+                    } else if val == dlmarker && !begin {
+                        shaded = false;
+                        break;
+                    } else if val > dlmarker {
+                        break;
+                    }
                     shaded = false;
-                },
+                }
             }
         }
         return shaded;
@@ -145,24 +160,25 @@ impl Torrent {
 
     /// Update data structure to reflect parts of piece
     /// that have been downloaded
-    fn insert_piece(&mut self, piece : &Piece){
-        let max_length : u32 = self.metainfo.info().piece_length as u32;
+    fn insert_piece(&mut self, piece: &Piece) {
+        let max_length: u32 = self.metainfo.info().piece_length as u32;
 
-        if piece.begin == 0 && piece.length == max_length  {
+        if piece.begin == 0 && piece.length == max_length {
             // Downloaded whole piece at once
             self.bitfield.set(piece.index as usize, true);
             self.map.remove(&piece.index);
-        } 
-        else {
+        } else {
             // Insert these pieces into the dictionary
             let begin = piece.begin;
             let end = piece.begin + piece.length;
-            if begin == end {return}
-            
+            if begin == end {
+                return;
+            }
+
             {
-                let mut vec = match self.map.entry(piece.index) {
+                match self.map.entry(piece.index) {
                     Entry::Occupied(o) => o.into_mut(),
-                    Entry::Vacant(v) => v.insert(Default::default())
+                    Entry::Vacant(v) => v.insert(Default::default()),
                 };
             }
 
@@ -172,14 +188,15 @@ impl Torrent {
             // Have to reborrow as mut here
             let mut vec = self.map.get_mut(&piece.index).unwrap();
 
-            vec.retain(|index| {
-                index.val() < begin || index.val() > end
-            });
+            vec.retain(|index| index.val() < begin || index.val() > end);
 
             // Decide where to insert - before the next biggest index
             let mut insert = vec.len();
             for (i, index) in vec.iter().enumerate() {
-                if index.val() > begin {insert = i; break;}
+                if index.val() > begin {
+                    insert = i;
+                    break;
+                }
             }
             if !end_shaded {
                 vec.insert(insert, DLMarker::End(end));
@@ -191,55 +208,42 @@ impl Torrent {
     }
 
     /// Map piece -> files
-    fn map_files(&self, piece : &Piece) -> Vec<FilePiece> {
-
+    fn map_files(&self, piece: &Piece) -> Vec<FilePiece> {
         let mut vec = Vec::new();
         let piece_length = self.metainfo.info().piece_length;
 
-        match &self.metainfo.info().file_info {
-            &FileInfo::SingleFileInfo{ref name, length, ref md5sum} => {
-                vec.push(FilePiece{
-                    path: name.clone(), // TODO : change to index so not dependent on path?
-                    begin: piece.file_index(piece_length),
-                    length: piece.length as i64,
-                });
-            },
-            &FileInfo::MultiFileInfo{ref name, ref files} => {
+        let mut iter = self.files.as_ref().unwrap().iter();
+        let mut total: i64 = 0;
+        let index = piece.file_index(piece_length);
+        let mut file : &BTFile = iter.next().unwrap();
 
-                let mut iter = files.iter();
-                let mut total : i64 = 0;
-                let index = piece.file_index(piece_length);
-                let mut file = iter.next().unwrap();
-
-                // Find the first file
-                while (total + file.length) < index {
-                    total += file.length;
-                    file = iter.next().unwrap();
-                }
-
-                // Apportion the load of the piece
-                let mut remaining = piece.length as i64;
-                while remaining > 0 {
-                    let index_in_file = index - total;
-                    let load = cmp::min(remaining, file.length - index_in_file);
-                    remaining -= load as i64;
-                    total += file.length;
-                    file = iter.next().unwrap();
-
-                    vec.push(FilePiece{
-                        path: file.path(),
-                        begin: index_in_file,
-                        length: load,
-                    })
-                }
-            },
+        // Find the first file
+        while (total + (*file).length) < index {
+            total += file.length;
+            file = iter.next().unwrap();
         }
-        
+
+        // Apportion the load of the piece
+        let mut remaining = piece.length as i64;
+        while remaining > 0 {
+            let index_in_file = index - total;
+            let load = cmp::min(remaining, file.length - index_in_file);
+            remaining -= load as i64;
+            total += file.length;
+            file = iter.next().unwrap();
+
+            vec.push(FilePiece {
+                path: file.path.clone(),
+                begin: index_in_file,
+                length: load,
+            })
+        }
+
         return vec;
     }
 }
 
-fn gen_random_bytes(n : usize) -> Vec<u8> {
+fn gen_random_bytes(n: usize) -> Vec<u8> {
     (0..n).map(|_| random::<u8>()).collect()
 }
 
@@ -253,33 +257,32 @@ macro_rules! piece {
     };
 }
 
-fn test_vec(torrent : &Torrent, vec2 : &Vec<DLMarker>){
+fn test_vec(torrent: &Torrent, vec2: &Vec<DLMarker>) {
     let vec = torrent.map.get(&0).unwrap();
     assert_eq!(vec2, vec);
 }
-
 
 #[test]
 fn test_insert_piece() {
     use self::DLMarker::Begin as B;
     use self::DLMarker::End as E;
 
-    let p1 = Piece::new(0,1,2); // 0##0..
-    let p2 = Piece::new(0,0,2); // #000..
-    let p3 = Piece::new(0,3,4); // 000####
-    let p4 = Piece::new(0,0,7); // #######
-    let p5 = Piece::new(0,0,8); // ########
-    let p6 = Piece::new(0,7,2); // 000000###
-    let p7 = Piece::new(0,10,1);// 0000000000#
-    let p8 = Piece::new(0,0,12);// ############
+    let p1 = Piece::new(0, 1, 2); // 0##0..
+    let p2 = Piece::new(0, 0, 2); // #000..
+    let p3 = Piece::new(0, 3, 4); // 000####
+    let p4 = Piece::new(0, 0, 7); // #######
+    let p5 = Piece::new(0, 0, 8); // ########
+    let p6 = Piece::new(0, 7, 2); // 000000###
+    let p7 = Piece::new(0, 10, 1); // 0000000000#
+    let p8 = Piece::new(0, 0, 12); // ############
 
     let mut torrent = Torrent::new("bible.torrent".to_string()).unwrap();
 
     torrent.insert_piece(&p1);
     torrent.insert_piece(&p7);
 
-    test_vec(&torrent, &vec!(B(1),E(3),B(10),E(11)));
-    
+    test_vec(&torrent, &vec![B(1), E(3), B(10), E(11)]);
+
     // In shaded boundary conditions
     assert!(!torrent.in_shaded(&0, &0, true));
     assert!(!torrent.in_shaded(&0, &1, true));
@@ -292,28 +295,29 @@ fn test_insert_piece() {
 
     torrent.insert_piece(&p2); // ###0
     assert!(torrent.in_shaded(&0, &0, false));
-    test_vec(&torrent, &vec!(B(0),E(3),B(10),E(11)));
+    test_vec(&torrent, &vec![B(0), E(3), B(10), E(11)]);
 
     torrent.insert_piece(&p3); // ######
-    test_vec(&torrent, &vec!(B(0),E(7),B(10),E(11)));
+    test_vec(&torrent, &vec![B(0), E(7), B(10), E(11)]);
 
     torrent.insert_piece(&p4);
-    test_vec(&torrent, &vec!(B(0),E(7),B(10),E(11)));
+    test_vec(&torrent, &vec![B(0), E(7), B(10), E(11)]);
 
     torrent.insert_piece(&p5);
-    test_vec(&torrent, &vec!(B(0),E(8),B(10),E(11)));
+    test_vec(&torrent, &vec![B(0), E(8), B(10), E(11)]);
 
     torrent.insert_piece(&p6);
-    test_vec(&torrent, &vec!(B(0),E(9),B(10),E(11)));
+    test_vec(&torrent, &vec![B(0), E(9), B(10), E(11)]);
 
     torrent.insert_piece(&p8);
-    test_vec(&torrent, &vec!(B(0),E(12)));
+    test_vec(&torrent, &vec![B(0), E(12)]);
 }
 
 #[test]
-fn test_map_files() {
-    
-}
+fn test_map_files() {}
+
+#[test]
+fn test_create_files() {}
 
 /*
 #[test] 
