@@ -56,9 +56,10 @@ impl Torrent {
         match MetaInfo::read(infofile) {
             Ok(metainfo) => {
                 let files = metainfo.info().file_info.as_BTFiles(download_dir);
+                let npieces = metainfo.info().pieces.len();
                 Ok(Torrent {
                     metainfo: metainfo,
-                    bitfield: BitVec::new(),
+                    bitfield: BitVec::from_elem(npieces, false),
                     map: HashMap::new(),
                     files: files,
                 })
@@ -100,7 +101,10 @@ impl Torrent {
 
             let mut fp = match options.open(file.path.clone()) {
                 Ok(f) => f,
-                Err(_) => File::create(file.path.clone())?, // LOG: had to create file
+                Err(_) => {
+                    info!("File {:?} doesn't exist; creating", file.path);
+                    File::create(file.path.clone())?
+                }
             };
             fp.seek(SeekFrom::Start(file.begin as u64))?;
             fp.write_all(piece.data.as_slice());
@@ -154,7 +158,38 @@ impl Torrent {
 
     /// Determine if all of this block has been downloaded
     fn have_block(&self, piece: &Piece) -> bool {
-        unimplemented!()
+        match self.map.get(&piece.index) {
+            Some(vec) => {
+                let mut inrange = false;
+                let end = piece.begin + piece.length;
+                let begin = piece.begin;
+
+                for index in vec {
+                    match index {
+                        &DLMarker::Begin(val) => {
+                            if !inrange && val <= begin {
+                                inrange = true;
+                            } else if !inrange && val > begin {
+                                break;
+                            }
+                        }
+                        &DLMarker::End(val) => {
+                            if inrange && val < end {
+                                inrange = false;
+                                if val >= begin {
+                                    break;
+                                }
+                            } else if inrange && val >= end {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                return inrange;
+            }
+            None => false,
+        }
     }
 
     /// Determine if dl_marker is in a downloaded area
@@ -311,6 +346,20 @@ fn test_vec(torrent: &Torrent, vec2: &Vec<DLMarker>) {
     assert_eq!(vec2, vec);
 }
 
+fn make_pieces() -> Vec<Piece> {
+    vec![
+        Piece::new(0, 1, 8),  // 0#######
+        Piece::new(0, 1, 2),  // 0##0..
+        Piece::new(0, 0, 2),  // #000..
+        Piece::new(0, 3, 4),  // 000####
+        Piece::new(0, 0, 7),  // #######
+        Piece::new(0, 0, 8),  // ########
+        Piece::new(0, 7, 2),  // 000000###
+        Piece::new(0, 10, 1), // 0000000000#
+        Piece::new(0, 0, 12), // ############
+    ]
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -319,23 +368,53 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn test_in_range() {
+        let p = make_pieces();
+
+        let mut torrent = Torrent::new(::TEST_FILE.to_string(), String::new()).unwrap();
+
+        for b in p.iter() {
+            assert!(!torrent.have_block(&b));
+        }
+
+        torrent.insert_piece(&p[1]);
+
+        for b in p.iter() {
+            if *b != p[1] {
+                assert!(!torrent.have_block(&b));
+            } else {
+                assert!(torrent.have_block(&b));
+            }
+        }
+
+        torrent.insert_piece(&p[6]);
+
+        for b in p.iter() {
+            if *b != p[1] && *b != p[6] {
+                assert!(!torrent.have_block(&b));
+            } else {
+                assert!(torrent.have_block(&b));
+            }
+        }
+
+        torrent.insert_piece(&p[8]);
+
+        for b in p.iter() {
+            assert!(torrent.have_block(&b));
+        }
+    }
+
+    #[test]
     fn test_insert_piece() {
         use self::DLMarker::Begin as B;
         use self::DLMarker::End as E;
 
-        let p1 = Piece::new(0, 1, 2); // 0##0..
-        let p2 = Piece::new(0, 0, 2); // #000..
-        let p3 = Piece::new(0, 3, 4); // 000####
-        let p4 = Piece::new(0, 0, 7); // #######
-        let p5 = Piece::new(0, 0, 8); // ########
-        let p6 = Piece::new(0, 7, 2); // 000000###
-        let p7 = Piece::new(0, 10, 1); // 0000000000#
-        let p8 = Piece::new(0, 0, 12); // ############
+        let p = make_pieces();
 
         let mut torrent = Torrent::new(::TEST_FILE.to_string(), String::new()).unwrap();
 
-        torrent.insert_piece(&p1);
-        torrent.insert_piece(&p7);
+        torrent.insert_piece(&p[1]);
+        torrent.insert_piece(&p[7]);
 
         test_vec(&torrent, &vec![B(1), E(3), B(10), E(11)]);
 
@@ -349,23 +428,23 @@ mod tests {
         assert!(torrent.in_shaded(&0, &2, false));
         assert!(!torrent.in_shaded(&0, &3, false));
 
-        torrent.insert_piece(&p2); // ###0
+        torrent.insert_piece(&p[2]); // ###0
         assert!(torrent.in_shaded(&0, &0, false));
         test_vec(&torrent, &vec![B(0), E(3), B(10), E(11)]);
 
-        torrent.insert_piece(&p3); // ######
+        torrent.insert_piece(&p[3]); // ######
         test_vec(&torrent, &vec![B(0), E(7), B(10), E(11)]);
 
-        torrent.insert_piece(&p4);
+        torrent.insert_piece(&p[4]);
         test_vec(&torrent, &vec![B(0), E(7), B(10), E(11)]);
 
-        torrent.insert_piece(&p5);
+        torrent.insert_piece(&p[5]);
         test_vec(&torrent, &vec![B(0), E(8), B(10), E(11)]);
 
-        torrent.insert_piece(&p6);
+        torrent.insert_piece(&p[6]);
         test_vec(&torrent, &vec![B(0), E(9), B(10), E(11)]);
 
-        torrent.insert_piece(&p8);
+        torrent.insert_piece(&p[8]);
         test_vec(&torrent, &vec![B(0), E(12)]);
     }
 
