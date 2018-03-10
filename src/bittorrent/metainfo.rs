@@ -450,29 +450,37 @@ impl Info {
     }
 }
 
-#[test]
-fn test_read_write() {
-    let metainfo = MetaInfo::read("test/bible.torrent".to_string()).unwrap();
-    metainfo.write("test/bible-out.torrent".to_string());
-    let metainfo2 = MetaInfo::read("test/bible-out.torrent".to_string()).unwrap();
-    assert_eq!(metainfo, metainfo2);
-}
+#[cfg(test)]
+mod tests {
 
-#[test]
-fn test_pieces() {
-    let bytes: [u8; 40] = [
-        54, 30, 209, 250, 31, 227, 163, 34, 205, 182, 4, 37, 119, 22, 3, 185, 16, 53, 29, 166, 204,
-        177, 1, 160, 101, 203, 150, 69, 169, 79, 86, 153, 37, 219, 218, 106, 227, 35, 24, 1,
-    ];
-    let string = unsafe { str::from_utf8_unchecked(&bytes).to_string() };
-    let vec = Info::split_hashes(string.clone()).unwrap();
-    let bstring = Info::hashes_to_string(&vec);
+    use bittorrent::metainfo::*;
+    use std::str;
 
-    match &bstring {
-        &BencodeT::String(ref string2) => {
-            assert_eq!(string.as_bytes(), string2.as_bytes());
-        }
-        _ => {}
+    #[test]
+    fn test_read_write() {
+        let metainfo = MetaInfo::read("test/bible.torrent".to_string()).unwrap();
+        metainfo.write("test/bible-out.torrent".to_string());
+        let metainfo2 = MetaInfo::read("test/bible-out.torrent".to_string()).unwrap();
+        assert_eq!(metainfo, metainfo2);
     }
-    assert_eq!(BencodeT::String(string), bstring);
+
+    #[test]
+    fn test_pieces() {
+        let bytes: [u8; 40] = [
+            54, 30, 209, 250, 31, 227, 163, 34, 205, 182, 4, 37, 119, 22, 3, 185, 16, 53, 29, 166,
+            204, 177, 1, 160, 101, 203, 150, 69, 169, 79, 86, 153, 37, 219, 218, 106, 227, 35, 24,
+            1,
+        ];
+        let string = unsafe { str::from_utf8_unchecked(&bytes).to_string() };
+        let vec = Info::split_hashes(string.clone()).unwrap();
+        let bstring = Info::hashes_to_string(&vec);
+
+        match &bstring {
+            &BencodeT::String(ref string2) => {
+                assert_eq!(string.as_bytes(), string2.as_bytes());
+            }
+            _ => {}
+        }
+        assert_eq!(BencodeT::String(string), bstring);
+    }
 }

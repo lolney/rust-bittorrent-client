@@ -1,9 +1,6 @@
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
 
 use bittorrent::BencodeT;
-use bittorrent::bencoder::encode;
 use bittorrent::utils::{create_strings, parse_i64};
 /*
 #[derive(Debug)]
@@ -209,128 +206,141 @@ fn parseStr(inbytes: &[u8], i: usize) -> (Result<BencodeT, String>, usize) {
     (Ok(BencodeT::String(string)), j + l)
 }
 
-#[test]
-fn strings() {
-    assert_eq!(
-        parse("5:abcde".as_bytes()).unwrap(),
-        BencodeT::String("abcde".to_string())
-    );
-    assert_eq!(
-        parse("26:abcdefghijklmnopQRSTUVWxyz".as_bytes()).unwrap(),
-        BencodeT::String("abcdefghijklmnopQRSTUVWxyz".to_string())
-    );
-}
+#[cfg(test)]
+mod tests {
 
-#[test]
-// TODO: larger than i64
-fn digits_basic() {
-    assert_eq!(parse("i3e".as_bytes()).unwrap(), BencodeT::Integer(3));
-    assert_eq!(parse("i-3e".as_bytes()).unwrap(), BencodeT::Integer(-3));
-}
+    use bittorrent::bedecoder::*;
+    use std::collections::HashMap;
+    use std::hash::{Hash, Hasher};
+    use std::collections::hash_map::DefaultHasher;
 
-#[test]
-fn digits_errors() {
-    assert_eq!(
-        parse("i333333".as_bytes()),
-        Err(String::from("Incorrect format; exceeded buffer length"))
-    );
-    assert_eq!(
-        parse("i3-3e".as_bytes()),
-        Err(format!("Expected int; found character {:?}", '-' as char))
-    );
-    assert_eq!(
-        parse("i7373777788888989898989899898ae".as_bytes()),
-        Err(format!("Expected int; found character {:?}", 'a'))
-    );
-}
+    use bittorrent::BencodeT;
+    use bittorrent::bencoder::encode;
+    use bittorrent::utils::{create_strings};
 
-#[test]
-fn digits_maxi64() {
-    assert_eq!(
-        parse("i9223372036854775807e".as_bytes()).unwrap(),
-        BencodeT::Integer(9223372036854775807)
-    );
-}
-
-#[test]
-fn digits_maxi32() {
-    assert_eq!(
-        parse("i2147483649e".as_bytes()).unwrap(),
-        BencodeT::Integer(2147483649)
-    );
-    assert_eq!(
-        parse("i2147483647e".as_bytes()).unwrap(),
-        BencodeT::Integer(2147483647)
-    );
-}
-
-#[test]
-fn list_errors() {
-    assert_eq!(
-        parse("li3e".as_bytes()),
-        Err(String::from("Incorrect format; exceeded buffer length"))
-    );
-}
-
-#[test]
-fn lists() {
-    let l1 = BencodeT::List(Vec::new());
-    assert_eq!(parse("le".as_bytes()).unwrap(), l1);
-
-    let bi = BencodeT::Integer(1234);
-    let l2 = BencodeT::List(vec![bi]);
-    assert_eq!(parse("li1234ee".as_bytes()).unwrap(), l2);
-
-    let mut v = Vec::new();
-    let mut s = String::from("l");
-    for i in 1..100 {
-        let bi = BencodeT::Integer(i);
-        s.push('i');
-        s.push_str(i.to_string().as_str());
-        s.push('e');
-        v.push(bi);
+    #[test]
+    fn strings() {
+        assert_eq!(
+            parse("5:abcde".as_bytes()).unwrap(),
+            BencodeT::String("abcde".to_string())
+        );
+        assert_eq!(
+            parse("26:abcdefghijklmnopQRSTUVWxyz".as_bytes()).unwrap(),
+            BencodeT::String("abcdefghijklmnopQRSTUVWxyz".to_string())
+        );
     }
-    s.push('e');
-    let l3 = BencodeT::List(v);
-    assert_eq!(parse(s.as_bytes()).unwrap(), l3);
 
-    let l4 = BencodeT::List(vec![l1, l2]);
-}
-
-fn calculate_hash<T: Hash>(t: &T) -> String {
-    let mut s = DefaultHasher::new();
-    t.hash(&mut s);
-    s.finish().to_string()
-}
-
-fn create_dictionary(keys: Vec<&'static str>, values: Vec<BencodeT>) -> (String, BencodeT) {
-    let mut hm = HashMap::new();
-    let mut dictstring = String::from("d");
-    for (key, value) in keys.iter().zip(values.iter()) {
-        let hash = encode(&BencodeT::String(calculate_hash(&key)));
-        dictstring.push_str(hash.as_str());
-        dictstring.push_str(key); // keys are the formatted version of the Bencoded objects
-        hm.insert(calculate_hash(&key), value.clone());
+    #[test]
+    // TODO: larger than i64
+    fn digits_basic() {
+        assert_eq!(parse("i3e".as_bytes()).unwrap(), BencodeT::Integer(3));
+        assert_eq!(parse("i-3e".as_bytes()).unwrap(), BencodeT::Integer(-3));
     }
-    dictstring.push('e');
 
-    let bdict = BencodeT::Dictionary(hm);
-    (dictstring, bdict)
-}
+    #[test]
+    fn digits_errors() {
+        assert_eq!(
+            parse("i333333".as_bytes()),
+            Err(String::from("Incorrect format; exceeded buffer length"))
+        );
+        assert_eq!(
+            parse("i3-3e".as_bytes()),
+            Err(format!("Expected int; found character {:?}", '-' as char))
+        );
+        assert_eq!(
+            parse("i7373777788888989898989899898ae".as_bytes()),
+            Err(format!("Expected int; found character {:?}", 'a'))
+        );
+    }
 
-#[test]
-fn dictionaries() {
-    let (strings, bstrings) = create_strings();
-    let (dictstring, bdict) = create_dictionary(strings, bstrings);
-    assert_eq!(parse(dictstring.as_bytes()).unwrap(), bdict);
+    #[test]
+    fn digits_maxi64() {
+        assert_eq!(
+            parse("i9223372036854775807e".as_bytes()).unwrap(),
+            BencodeT::Integer(9223372036854775807)
+        );
+    }
 
-    /*
-        let mut keys = Vec::new();
-        let mut values = Vec::new();
-        for i in 1..10 {
-            keys.push(dictstring.as_str());
-            values.push(bdict);
+    #[test]
+    fn digits_maxi32() {
+        assert_eq!(
+            parse("i2147483649e".as_bytes()).unwrap(),
+            BencodeT::Integer(2147483649)
+        );
+        assert_eq!(
+            parse("i2147483647e".as_bytes()).unwrap(),
+            BencodeT::Integer(2147483647)
+        );
+    }
+
+    #[test]
+    fn list_errors() {
+        assert_eq!(
+            parse("li3e".as_bytes()),
+            Err(String::from("Incorrect format; exceeded buffer length"))
+        );
+    }
+
+    #[test]
+    fn lists() {
+        let l1 = BencodeT::List(Vec::new());
+        assert_eq!(parse("le".as_bytes()).unwrap(), l1);
+
+        let bi = BencodeT::Integer(1234);
+        let l2 = BencodeT::List(vec![bi]);
+        assert_eq!(parse("li1234ee".as_bytes()).unwrap(), l2);
+
+        let mut v = Vec::new();
+        let mut s = String::from("l");
+        for i in 1..100 {
+            let bi = BencodeT::Integer(i);
+            s.push('i');
+            s.push_str(i.to_string().as_str());
+            s.push('e');
+            v.push(bi);
         }
-        let (dictstring, bdict) = create_dictionary(keys, values);
-        assert_eq!(parse(dictstring.as_bytes()).unwrap(), bdict);*/
+        s.push('e');
+        let l3 = BencodeT::List(v);
+        assert_eq!(parse(s.as_bytes()).unwrap(), l3);
+
+        let l4 = BencodeT::List(vec![l1, l2]);
+    }
+
+    fn calculate_hash<T: Hash>(t: &T) -> String {
+        let mut s = DefaultHasher::new();
+        t.hash(&mut s);
+        s.finish().to_string()
+    }
+
+    fn create_dictionary(keys: Vec<&'static str>, values: Vec<BencodeT>) -> (String, BencodeT) {
+        let mut hm = HashMap::new();
+        let mut dictstring = String::from("d");
+        for (key, value) in keys.iter().zip(values.iter()) {
+            let hash = encode(&BencodeT::String(calculate_hash(&key)));
+            dictstring.push_str(hash.as_str());
+            dictstring.push_str(key); // keys are the formatted version of the Bencoded objects
+            hm.insert(calculate_hash(&key), value.clone());
+        }
+        dictstring.push('e');
+
+        let bdict = BencodeT::Dictionary(hm);
+        (dictstring, bdict)
+    }
+
+    #[test]
+    fn dictionaries() {
+        let (strings, bstrings) = create_strings();
+        let (dictstring, bdict) = create_dictionary(strings, bstrings);
+        assert_eq!(parse(dictstring.as_bytes()).unwrap(), bdict);
+
+        /*
+            let mut keys = Vec::new();
+            let mut values = Vec::new();
+            for i in 1..10 {
+                keys.push(dictstring.as_str());
+                values.push(bdict);
+            }
+            let (dictstring, bdict) = create_dictionary(keys, values);
+            assert_eq!(parse(dictstring.as_bytes()).unwrap(), bdict);*/
+    }
 }

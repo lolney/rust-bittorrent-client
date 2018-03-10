@@ -273,144 +273,152 @@ fn test_vec(torrent: &Torrent, vec2: &Vec<DLMarker>) {
     assert_eq!(vec2, vec);
 }
 
-#[test]
-fn test_insert_piece() {
-    use self::DLMarker::Begin as B;
-    use self::DLMarker::End as E;
+#[cfg(test)]
+mod tests {
 
-    let p1 = Piece::new(0, 1, 2); // 0##0..
-    let p2 = Piece::new(0, 0, 2); // #000..
-    let p3 = Piece::new(0, 3, 4); // 000####
-    let p4 = Piece::new(0, 0, 7); // #######
-    let p5 = Piece::new(0, 0, 8); // ########
-    let p6 = Piece::new(0, 7, 2); // 000000###
-    let p7 = Piece::new(0, 10, 1); // 0000000000#
-    let p8 = Piece::new(0, 0, 12); // ############
+    use bittorrent::torrent::*;
+    use bittorrent::{Piece, metainfo::BTFile};
+    use std::path::PathBuf;
 
-    let mut torrent = Torrent::new("test/bible.torrent".to_string(), String::new()).unwrap();
+    #[test]
+    fn test_insert_piece() {
+        use self::DLMarker::Begin as B;
+        use self::DLMarker::End as E;
 
-    torrent.insert_piece(&p1);
-    torrent.insert_piece(&p7);
+        let p1 = Piece::new(0, 1, 2); // 0##0..
+        let p2 = Piece::new(0, 0, 2); // #000..
+        let p3 = Piece::new(0, 3, 4); // 000####
+        let p4 = Piece::new(0, 0, 7); // #######
+        let p5 = Piece::new(0, 0, 8); // ########
+        let p6 = Piece::new(0, 7, 2); // 000000###
+        let p7 = Piece::new(0, 10, 1); // 0000000000#
+        let p8 = Piece::new(0, 0, 12); // ############
 
-    test_vec(&torrent, &vec![B(1), E(3), B(10), E(11)]);
+        let mut torrent = Torrent::new("test/bible.torrent".to_string(), String::new()).unwrap();
 
-    // In shaded boundary conditions
-    assert!(!torrent.in_shaded(&0, &0, true));
-    assert!(!torrent.in_shaded(&0, &1, true));
-    assert!(torrent.in_shaded(&0, &2, true));
-    assert!(torrent.in_shaded(&0, &3, true));
+        torrent.insert_piece(&p1);
+        torrent.insert_piece(&p7);
 
-    assert!(torrent.in_shaded(&0, &1, false));
-    assert!(torrent.in_shaded(&0, &2, false));
-    assert!(!torrent.in_shaded(&0, &3, false));
+        test_vec(&torrent, &vec![B(1), E(3), B(10), E(11)]);
 
-    torrent.insert_piece(&p2); // ###0
-    assert!(torrent.in_shaded(&0, &0, false));
-    test_vec(&torrent, &vec![B(0), E(3), B(10), E(11)]);
+        // In shaded boundary conditions
+        assert!(!torrent.in_shaded(&0, &0, true));
+        assert!(!torrent.in_shaded(&0, &1, true));
+        assert!(torrent.in_shaded(&0, &2, true));
+        assert!(torrent.in_shaded(&0, &3, true));
 
-    torrent.insert_piece(&p3); // ######
-    test_vec(&torrent, &vec![B(0), E(7), B(10), E(11)]);
+        assert!(torrent.in_shaded(&0, &1, false));
+        assert!(torrent.in_shaded(&0, &2, false));
+        assert!(!torrent.in_shaded(&0, &3, false));
 
-    torrent.insert_piece(&p4);
-    test_vec(&torrent, &vec![B(0), E(7), B(10), E(11)]);
+        torrent.insert_piece(&p2); // ###0
+        assert!(torrent.in_shaded(&0, &0, false));
+        test_vec(&torrent, &vec![B(0), E(3), B(10), E(11)]);
 
-    torrent.insert_piece(&p5);
-    test_vec(&torrent, &vec![B(0), E(8), B(10), E(11)]);
+        torrent.insert_piece(&p3); // ######
+        test_vec(&torrent, &vec![B(0), E(7), B(10), E(11)]);
 
-    torrent.insert_piece(&p6);
-    test_vec(&torrent, &vec![B(0), E(9), B(10), E(11)]);
+        torrent.insert_piece(&p4);
+        test_vec(&torrent, &vec![B(0), E(7), B(10), E(11)]);
 
-    torrent.insert_piece(&p8);
-    test_vec(&torrent, &vec![B(0), E(12)]);
-}
+        torrent.insert_piece(&p5);
+        test_vec(&torrent, &vec![B(0), E(8), B(10), E(11)]);
 
-#[test]
-fn test_map_files() {
-    let mut torrent = Torrent::new("test/bible.torrent".to_string(), String::new()).unwrap();
-    let piece_length: u32 = torrent.metainfo.info().piece_length as u32;
-    let piece0 = Piece {
-        index: 0,
-        begin: 0,
-        length: piece_length,
-    };
-    let piece1 = Piece {
-        index: 1,
-        begin: 500,
-        length: piece_length,
-    };
-    let piece2 = Piece {
-        index: 3,
-        begin: 500,
-        length: 2 * (piece_length / 4) + 1,
-    };
-    let files = vec![
-        piece_length,
-        piece_length,
-        piece_length,
-        piece_length / 4,
-        0,
-        1,
-        piece_length / 4,
-        500,
-    ];
-    torrent.files = files
-        .iter()
-        .map(|l| BTFile {
-            length: *l as i64,
-            md5sum: None,
-            path: PathBuf::new(),
-        })
-        .collect();
+        torrent.insert_piece(&p6);
+        test_vec(&torrent, &vec![B(0), E(9), B(10), E(11)]);
 
-    assert_eq!(torrent.map_files(&piece0), vec![fpiece!(0, piece_length)]);
-    assert_eq!(
-        torrent.map_files(&piece1),
-        vec![fpiece!(500, piece_length - 500), fpiece!(0, 500)]
-    );
-    assert_eq!(
-        torrent.map_files(&piece2),
-        vec![
-            fpiece!(500, (piece_length / 4) - 500),
-            fpiece!(0, 0),
-            fpiece!(0, 1),
-            fpiece!(0, piece_length / 4),
-            fpiece!(0, 500),
-        ]
-    );
-}
-
-#[test]
-fn test_create_files() {
-    remove_dir_all(PathBuf::from("test/test"));
-    let download_dir = String::from("test/test");
-    let fnames = vec!["test/torrent.torrent", "test/bible.torrent"];
-    let test_files = fnames
-        .iter()
-        .map(|x| Torrent::new(x.to_string(), download_dir.clone()).unwrap());
-    for torrent in test_files {
-        torrent.create_files().unwrap();
+        torrent.insert_piece(&p8);
+        test_vec(&torrent, &vec![B(0), E(12)]);
     }
+
+    #[test]
+    fn test_map_files() {
+        let mut torrent = Torrent::new("test/bible.torrent".to_string(), String::new()).unwrap();
+        let piece_length: u32 = torrent.metainfo.info().piece_length as u32;
+        let piece0 = Piece {
+            index: 0,
+            begin: 0,
+            length: piece_length,
+        };
+        let piece1 = Piece {
+            index: 1,
+            begin: 500,
+            length: piece_length,
+        };
+        let piece2 = Piece {
+            index: 3,
+            begin: 500,
+            length: 2 * (piece_length / 4) + 1,
+        };
+        let files = vec![
+            piece_length,
+            piece_length,
+            piece_length,
+            piece_length / 4,
+            0,
+            1,
+            piece_length / 4,
+            500,
+        ];
+        torrent.files = files
+            .iter()
+            .map(|l| BTFile {
+                length: *l as i64,
+                md5sum: None,
+                path: PathBuf::new(),
+            })
+            .collect();
+
+        assert_eq!(torrent.map_files(&piece0), vec![fpiece!(0, piece_length)]);
+        assert_eq!(
+            torrent.map_files(&piece1),
+            vec![fpiece!(500, piece_length - 500), fpiece!(0, 500)]
+        );
+        assert_eq!(
+            torrent.map_files(&piece2),
+            vec![
+                fpiece!(500, (piece_length / 4) - 500),
+                fpiece!(0, 0),
+                fpiece!(0, 1),
+                fpiece!(0, piece_length / 4),
+                fpiece!(0, 500),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_create_files() {
+        remove_dir_all(PathBuf::from("test/test"));
+        let download_dir = String::from("test/test");
+        let fnames = vec!["test/torrent.torrent", "test/bible.torrent"];
+        let test_files = fnames
+            .iter()
+            .map(|x| Torrent::new(x.to_string(), download_dir.clone()).unwrap());
+        for torrent in test_files {
+            torrent.create_files().unwrap();
+        }
+    }
+
+    /*
+    #[test] 
+    fn test_single_file() {
+        let bytes = gen_random_bytes(40);
+        let p1 = PieceData{
+            piece : piece!(20),
+            data : bytes[0..20].to_vec()
+        };
+        let p2 = PieceData {
+            piece : piece!(20),
+            data : bytes[20..40].to_vec()
+        };
+
+        let mut torrent = Torrent::new("bible.torrent".to_string()).unwrap();
+        torrent.write_block(&p2);
+        torrent.write_block(&p1);
+        let p1_2 : PieceData = torrent.read_block(&p1.piece).unwrap();
+        let p2_2 : PieceData = torrent.read_block(&p2.piece).unwrap();
+
+        assert_eq!(p1, p1_2);
+        assert_eq!(p2, p2_2);
+    }*/
 }
-
-/*
-#[test] 
-fn test_single_file() {
-    let bytes = gen_random_bytes(40);
-    let p1 = PieceData{
-        piece : piece!(20),
-        data : bytes[0..20].to_vec()
-    };
-    let p2 = PieceData {
-        piece : piece!(20),
-        data : bytes[20..40].to_vec()
-    };
-
-    let mut torrent = Torrent::new("bible.torrent".to_string()).unwrap();
-    torrent.write_block(&p2);
-    torrent.write_block(&p1);
-    let p1_2 : PieceData = torrent.read_block(&p1.piece).unwrap();
-    let p2_2 : PieceData = torrent.read_block(&p2.piece).unwrap();
-
-    assert_eq!(p1, p1_2);
-    assert_eq!(p2, p2_2);
-}*/

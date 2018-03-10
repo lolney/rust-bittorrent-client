@@ -21,3 +21,7 @@ const PSTRLEN: u8 = 19;
 const PSTR: &'static str = "BitTorrent protocol";
 const READ_TIMEOUT: u64 = 5;
 const MSG_SIZE: usize = 2 ^ 16;
+
+const DL_DIR: &'static str = "test/test";
+// Default test file
+const TEST_FILE: &'static str = "test/bible.torrent";

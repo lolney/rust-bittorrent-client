@@ -264,7 +264,11 @@ impl PeerManager {
         }
     }
 
-    pub fn add_torrent(&mut self, metainfo_path: String, download_path : String) -> Result<(), ParseError> {
+    pub fn add_torrent(
+        &mut self,
+        metainfo_path: String,
+        download_path: String,
+    ) -> Result<(), ParseError> {
         match Torrent::new(metainfo_path, download_path) {
             Ok(torrent) => {
                 let mut torrents = self.torrents.lock().unwrap();
@@ -348,6 +352,11 @@ impl PeerManager {
                                 for req in requests {
                                     match torrent.read_block(&req) {
                                         Ok(ref pd) => {
+                                            trace!(
+                                                "Reading piece for peer {:?}: {:?}",
+                                                peer.peer_id(),
+                                                pd
+                                            );
                                             stream.write(Peer::piece(&pd).as_slice());
                                         }
                                         Err(err) => {
@@ -358,11 +367,17 @@ impl PeerManager {
                                 }
                             }
                             Action::Write(piece) => {
+                                trace!("Writing piece from peer {:?}: {:?}", peer.peer_id(), piece);
                                 download_size = download_size + piece.piece.length;
                                 acquire_torrent_lock!(torrents, peer, torrent);
                                 torrent.write_block(&piece);
                             }
                             Action::InterestedChange => {
+                                trace!(
+                                    "Peer {:?} interested status now: {:?}",
+                                    peer.peer_id(),
+                                    peer.peer_interested
+                                );
                                 comm.send(PeerUpdate::InterestedChange);
                             }
                             Action::None => {}
@@ -390,6 +405,10 @@ impl PeerManager {
                     stream.write(peer.choke(false).as_slice());
                 }
                 ManagerUpdate::Disconnect => {
+                    info!(
+                        "Manager has ordered disconnect from peer {:?}",
+                        peer.peer_id()
+                    );
                     return;
                 }
                 ManagerUpdate::None => {}
@@ -431,15 +450,18 @@ impl PeerManager {
 
         loop {
             // TODO: consider sleep here
-            // Messages sent when a new peer is added
+            // Receive messages sent when a new peer is added
             match recv.try_recv() {
                 Ok(newpeer) => {
                     peer_priority.push(newpeer.peer_id, newpeer.priority);
                     peers.insert(newpeer.peer_id, newpeer.comm);
                 }
-                Err(err) => match (err) {
+                Err(err) => match err {
                     mpsc::TryRecvError::Empty => {}
-                    mpsc::TryRecvError::Disconnected => return,
+                    mpsc::TryRecvError::Disconnected => {
+                        info!("TCP listener thread has shut down. Controller now shutting down.");
+                        return;
+                    }
                 },
             }
 
@@ -457,6 +479,7 @@ impl PeerManager {
                 )
             });
 
+            // Keep best uploaders unchoked
             if start.elapsed() >= ten_secs {
                 let mut i = 0;
                 for (id, priority) in peer_priority.clone().into_sorted_iter() {
@@ -472,7 +495,7 @@ impl PeerManager {
         }
     }
 
-    fn handle(&mut self, port: &'static str) {
+    pub fn handle(&mut self, port: &'static str) {
         // "127.0.0.1:80"
         let torrents = self.torrents.clone();
 
@@ -497,13 +520,19 @@ impl PeerManager {
                     Ok(stream) => {
                         match PeerManager::handle_client(&stream, &torrents) {
                             Ok(peer) => {
+                                info!("New peer connected: {:?}", peer.info_hash());
                                 let (manager_comm, peer_comm) = PeerComm::create();
 
-                                manager_send.send(NewPeerMsg {
-                                    peer_id: peer.info_hash().clone(),
-                                    comm: manager_comm,
-                                    priority: PeerPriority::new(),
-                                });
+                                manager_send
+                                    .send(NewPeerMsg {
+                                        peer_id: peer.info_hash().clone(),
+                                        comm: manager_comm,
+                                        priority: PeerPriority::new(),
+                                    })
+                                    .or_else(|err| {
+                                        error!("Failed to send message for new peer: {}", err);
+                                        Err(err)
+                                    });
 
                                 thread::spawn(move || {
                                     // manages new connection
@@ -523,6 +552,21 @@ impl PeerManager {
         });
 
         // will need to be moved into own thread
-        PeerManager::manage_choking(manager_recv);
+        thread::spawn(move || {
+            PeerManager::manage_choking(manager_recv);
+        });
     }
+}
+
+#[cfg(test)]
+mod tests {
+    /*
+    #[test]
+    fn test_send_receive() {
+        manager = PeerManager::new();
+        manager.add_torrent(::TEST_FILE.to_string(), ::DL_DIR.to_string);
+        manager.handle("80");
+        manager.handle("81");
+    }
+    */
 }

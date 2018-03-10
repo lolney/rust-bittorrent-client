@@ -343,127 +343,136 @@ impl Peer {
     }
 }
 
-#[test]
-fn test_simple_messages() {
-    let mut peer = Peer::new(PeerInfo::new());
+#[cfg(test)]
+mod tests {
 
-    let keep_alive = [0u32];
-    let choke = message!(1u32, 0u8);
-    let unchoke = message!(1u32, 1u8);
-    let interested = message!(1u32, 2u8);
-    let not_interested = message!(1u32, 3u8);
+    use bittorrent::Peer::*;
+    use bit_vec::BitVec;
+    use bittorrent::{ParseError, Piece, PieceData};
+    use std::mem::transmute;
+    
+    #[test]
+    fn test_simple_messages() {
+        let mut peer = Peer::new(PeerInfo::new());
 
-    peer.parse_message(&choke);
-    assert_eq!(peer.peer_choking, true);
-    assert_eq!(peer.choke(true), choke);
-    assert_eq!(
-        peer.choke(true),
-        &[0b00000000, 0b00000000, 0b00000000, 0b00000001, 0b000000000]
-    );
+        let keep_alive = [0u32];
+        let choke = message!(1u32, 0u8);
+        let unchoke = message!(1u32, 1u8);
+        let interested = message!(1u32, 2u8);
+        let not_interested = message!(1u32, 3u8);
 
-    peer.parse_message(&unchoke);
-    assert_eq!(peer.peer_choking, false);
-    assert_eq!(peer.choke(false), unchoke);
+        peer.parse_message(&choke);
+        assert_eq!(peer.peer_choking, true);
+        assert_eq!(peer.choke(true), choke);
+        assert_eq!(
+            peer.choke(true),
+            &[0b00000000, 0b00000000, 0b00000000, 0b00000001, 0b000000000]
+        );
 
-    peer.parse_message(&interested);
-    assert_eq!(peer.peer_interested, true);
-    assert_eq!(peer.interested(true), interested);
+        peer.parse_message(&unchoke);
+        assert_eq!(peer.peer_choking, false);
+        assert_eq!(peer.choke(false), unchoke);
 
-    peer.parse_message(&not_interested);
-    assert_eq!(peer.peer_interested, false);
-    assert_eq!(peer.interested(false), not_interested);
-}
+        peer.parse_message(&interested);
+        assert_eq!(peer.peer_interested, true);
+        assert_eq!(peer.interested(true), interested);
 
-#[test]
-fn test_parse_have() {
-    let mut peer = Peer::new(PeerInfo::new());
-
-    let have = message!(5u32, 4u8, 0u32);
-    assert_eq!(Peer::have(0), have);
-    assert_eq!(
-        peer.parse_message(&have),
-        Err("Have not received bitfield from Peer")
-    );
-    assert_eq!(peer.bitfield.get(0), None);
-
-    let bitfield = message!(5u32, 5u8, 0b01000000000000000000000000000000 as u32);
-    assert_eq!(
-        Peer::bitfield(BitVec::from_bytes(&[
-            0b01000000, 0b00000000, 0b00000000, 0b00000000
-        ])),
-        bitfield
-    );
-    peer.parse_message(&bitfield);
-    assert_eq!(peer.bitfield.get(1).unwrap(), true);
-
-    let have = message!(5u32, 4u8, 32u32);
-    assert_eq!(Peer::have(32), have);
-    assert_eq!(
-        peer.parse_message(&have),
-        Err("Received have message with piece index that exceeds number of pieces")
-    );
-
-    let bitfield = message!(
-        9u32,
-        5u8,
-        0b10000000000000000000000000000000 as u32,
-        0b10000000000000000000000000000000 as u32
-    );
-    peer.parse_message(&bitfield);
-    assert_eq!(peer.bitfield.get(32).unwrap(), true);
-
-    assert_eq!(peer.bitfield.get(7).unwrap(), false);
-    let have = message!(5u32, 4u8, 7u32);
-    peer.parse_message(&have);
-    assert_eq!(peer.bitfield.get(7).unwrap(), true);
-}
-
-#[test]
-fn test_parse_request() {
-    let mut peer = Peer::new(PeerInfo::new());
-
-    let request = message!(13u32, 6u8, 0u32, 0u32, 16384u32);
-
-    for i in 0..QUEUE_LENGTH - 1 {
-        assert_eq!(peer.parse_request(&request), Ok(Action::None));
+        peer.parse_message(&not_interested);
+        assert_eq!(peer.peer_interested, false);
+        assert_eq!(peer.interested(false), not_interested);
     }
 
-    peer.parse_request(&request);
-    assert_eq!(peer.request_queue.len(), 0);
-}
+    #[test]
+    fn test_parse_have() {
+        let mut peer = Peer::new(PeerInfo::new());
 
-#[test]
-fn test_parse_piece() {
-    let mut peer = Peer::new(PeerInfo::new());
+        let have = message!(5u32, 4u8, 0u32);
+        assert_eq!(Peer::have(0), have);
+        assert_eq!(
+            peer.parse_message(&have),
+            Err("Have not received bitfield from Peer")
+        );
+        assert_eq!(peer.bitfield.get(0), None);
 
-    let message = message_calc_length!(7u8, 0u32, 0u32, 1u32, 2u32, 3u32);
-    let bytes = byte_slice_from_u32s!(1u32, 2u32, 3u32);
-    let piece = Piece {
-        index: 0u32,
-        begin: 0u32,
-        length: 12u32,
-    };
-    let piece_data = PieceData {
-        piece: piece,
-        data: bytes,
-    };
+        let bitfield = message!(5u32, 5u8, 0b01000000000000000000000000000000 as u32);
+        assert_eq!(
+            Peer::bitfield(BitVec::from_bytes(&[
+                0b01000000, 0b00000000, 0b00000000, 0b00000000
+            ])),
+            bitfield
+        );
+        peer.parse_message(&bitfield);
+        assert_eq!(peer.bitfield.get(1).unwrap(), true);
 
-    assert_eq!(Peer::piece(&piece_data), message);
+        let have = message!(5u32, 4u8, 32u32);
+        assert_eq!(Peer::have(32), have);
+        assert_eq!(
+            peer.parse_message(&have),
+            Err("Received have message with piece index that exceeds number of pieces")
+        );
 
-    let result = peer.parse_message(&message);
-    assert_eq!(result, Ok(Action::Write(piece_data)));
-}
+        let bitfield = message!(
+            9u32,
+            5u8,
+            0b10000000000000000000000000000000 as u32,
+            0b10000000000000000000000000000000 as u32
+        );
+        peer.parse_message(&bitfield);
+        assert_eq!(peer.bitfield.get(32).unwrap(), true);
 
-#[test]
-fn test_parse_handshake() {
-    let mut buf: [u8; 68] = [0; 68];
-    let peer_id = Peer::gen_peer_id();
-    let info_hash = Peer::gen_peer_id();
-    let hsmsg = Peer::handshake(&peer_id, &info_hash);
-    let (pi, inf) = Peer::parse_handshake(&hsmsg).unwrap();
+        assert_eq!(peer.bitfield.get(7).unwrap(), false);
+        let have = message!(5u32, 4u8, 7u32);
+        peer.parse_message(&have);
+        assert_eq!(peer.bitfield.get(7).unwrap(), true);
+    }
 
-    assert_eq!(pi, peer_id);
-    assert_eq!(inf, info_hash);
+    #[test]
+    fn test_parse_request() {
+        let mut peer = Peer::new(PeerInfo::new());
+
+        let request = message!(13u32, 6u8, 0u32, 0u32, 16384u32);
+
+        for i in 0..QUEUE_LENGTH - 1 {
+            assert_eq!(peer.parse_request(&request), Ok(Action::None));
+        }
+
+        peer.parse_request(&request);
+        assert_eq!(peer.request_queue.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_piece() {
+        let mut peer = Peer::new(PeerInfo::new());
+
+        let message = message_calc_length!(7u8, 0u32, 0u32, 1u32, 2u32, 3u32);
+        let bytes = byte_slice_from_u32s!(1u32, 2u32, 3u32);
+        let piece = Piece {
+            index: 0u32,
+            begin: 0u32,
+            length: 12u32,
+        };
+        let piece_data = PieceData {
+            piece: piece,
+            data: bytes,
+        };
+
+        assert_eq!(Peer::piece(&piece_data), message);
+
+        let result = peer.parse_message(&message);
+        assert_eq!(result, Ok(Action::Write(piece_data)));
+    }
+
+    #[test]
+    fn test_parse_handshake() {
+        let mut buf: [u8; 68] = [0; 68];
+        let peer_id = Peer::gen_peer_id();
+        let info_hash = Peer::gen_peer_id();
+        let hsmsg = Peer::handshake(&peer_id, &info_hash);
+        let (pi, inf) = Peer::parse_handshake(&hsmsg).unwrap();
+
+        assert_eq!(pi, peer_id);
+        assert_eq!(inf, info_hash);
+    }
 }
 
 #[derive(Debug)]
