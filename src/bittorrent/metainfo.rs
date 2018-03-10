@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use bittorrent::{Bencodable, BencodeT, ParseError};
 use bittorrent::bencoder::encode;
 use bittorrent::bedecoder::parse;
+use bittorrent::PieceData;
 use std::fs::File;
 use std::path::PathBuf;
 use std::io::BufReader;
@@ -111,6 +112,12 @@ macro_rules! get_keys {
         )
     }
 }*/
+
+fn hash(bytes: &[u8]) -> [u8; 20] {
+    let mut sha = Sha1::new();
+    sha.update(bytes);
+    sha.digest().bytes()
+}
 
 /// In to_BencodeT: inserts a vector into the hm, converting elems to BencodeT
 fn insert_vector<T: Bencodable>(hm: &mut HashMap<String, BencodeT>, string: String, vec: &Vec<T>) {
@@ -309,9 +316,7 @@ impl Bencodable for MIFile {
 impl MetaInfo {
     pub fn info_hash(&self) -> [u8; 20] {
         let bstring = encode(&self.info.to_BencodeT());
-        let mut sha = Sha1::new();
-        sha.update(bstring.as_bytes());
-        sha.digest().bytes()
+        hash(bstring.as_bytes())
     }
 
     pub fn info(&self) -> &Info {
@@ -447,6 +452,17 @@ impl Info {
         self.file_info.to_BencodeT(&mut hm);
 
         BencodeT::Dictionary(hm)
+    }
+
+    /// Return true if piece data hash is valid
+    pub fn valid_hash(&self, piece: &PieceData) -> bool {
+        if piece.piece.index as usize >= self.pieces.len() {
+            false
+        } else if hash(piece.data.as_slice()) != self.pieces[piece.piece.index as usize] {
+            false
+        } else {
+            true
+        }
     }
 }
 

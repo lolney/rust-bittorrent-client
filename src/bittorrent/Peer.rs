@@ -219,7 +219,7 @@ impl Peer {
     pub fn parse_cancel(&mut self, msg: &[u8]) -> Result<Action, &'static str> {
         let piece = self.parse_piece_generic(msg);
         match self.request_queue.remove_item(&piece) {
-            Some(obj) => Ok(Action::None),
+            Some(_) => Ok(Action::None),
             None => Err("Received cancel for piece not in queue"),
         }
     }
@@ -350,7 +350,7 @@ mod tests {
     use bit_vec::BitVec;
     use bittorrent::{ParseError, Piece, PieceData};
     use std::mem::transmute;
-    
+
     #[test]
     fn test_simple_messages() {
         let mut peer = Peer::new(PeerInfo::new());

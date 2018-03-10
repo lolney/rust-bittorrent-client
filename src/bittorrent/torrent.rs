@@ -2,6 +2,7 @@ use bittorrent::{ParseError, Piece, PieceData, metainfo::BTFile, metainfo::MetaI
 use std::collections::HashMap;
 use bit_vec::BitVec;
 use std::io::Error as IOError;
+use std::io::ErrorKind;
 use std::fs::{create_dir_all, remove_dir_all, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use rand::random;
@@ -80,7 +81,19 @@ impl Torrent {
         Ok(())
     }
 
+    /// Write block after verifying that hash is correct
     pub fn write_block(&mut self, piece: &PieceData) -> Result<(), IOError> {
+        if self.metainfo.info().valid_hash(piece) {
+            self.write_block_raw(piece)
+        } else {
+            Err(IOError::new(
+                ErrorKind::Other,
+                format!("Invalid block: {:?}", piece.piece),
+            ))
+        }
+    }
+
+    fn write_block_raw(&mut self, piece: &PieceData) -> Result<(), IOError> {
         for file in self.map_files(&piece.piece).iter() {
             let mut options = OpenOptions::new();
             options.write(true);
@@ -98,7 +111,27 @@ impl Torrent {
         Ok(())
     }
 
+    /// Read block after verifying that we have it
     pub fn read_block(&mut self, piece: &Piece) -> Result<PieceData, IOError> {
+        match self.bitfield.get(piece.index as usize) {
+            Some(have) => {
+                if have || self.have_block(piece) {
+                    self.read_block_raw(piece)
+                } else {
+                    Err(IOError::new(
+                        ErrorKind::Other,
+                        format!("Don't yet have requested piece: {:?}", piece),
+                    ))
+                }
+            }
+            None => Err(IOError::new(
+                ErrorKind::Other,
+                format!("Peer requested nonexistent piece: {:?}", piece),
+            )),
+        }
+    }
+
+    fn read_block_raw(&mut self, piece: &Piece) -> Result<PieceData, IOError> {
         let mut vec: Vec<u8> = Vec::new();
         for file in self.map_files(piece).iter() {
             let mut buf = vec![0; file.length as usize];
@@ -117,6 +150,11 @@ impl Torrent {
 
     pub fn info_hash(&self) -> [u8; 20] {
         return self.metainfo.info_hash();
+    }
+
+    /// Determine if all of this block has been downloaded
+    fn have_block(&self, piece: &Piece) -> bool {
+        unimplemented!()
     }
 
     /// Determine if dl_marker is in a downloaded area
@@ -249,10 +287,10 @@ fn gen_random_bytes(n: usize) -> Vec<u8> {
 }
 
 macro_rules! piece {
-    ($n : expr) => {
+    ($i : expr, $n : expr) => {
         Piece {
             index : 0,
-            begin : 0,
+            begin : $i,
             length : $n,
         }
     };
@@ -294,7 +332,7 @@ mod tests {
         let p7 = Piece::new(0, 10, 1); // 0000000000#
         let p8 = Piece::new(0, 0, 12); // ############
 
-        let mut torrent = Torrent::new("test/bible.torrent".to_string(), String::new()).unwrap();
+        let mut torrent = Torrent::new(::TEST_FILE.to_string(), String::new()).unwrap();
 
         torrent.insert_piece(&p1);
         torrent.insert_piece(&p7);
@@ -333,7 +371,7 @@ mod tests {
 
     #[test]
     fn test_map_files() {
-        let mut torrent = Torrent::new("test/bible.torrent".to_string(), String::new()).unwrap();
+        let mut torrent = Torrent::new(::TEST_FILE.to_string(), String::new()).unwrap();
         let piece_length: u32 = torrent.metainfo.info().piece_length as u32;
         let piece0 = Piece {
             index: 0,
@@ -388,37 +426,36 @@ mod tests {
 
     #[test]
     fn test_create_files() {
-        remove_dir_all(PathBuf::from("test/test"));
-        let download_dir = String::from("test/test");
-        let fnames = vec!["test/torrent.torrent", "test/bible.torrent"];
+        remove_dir_all(PathBuf::from(::DL_DIR));
+        let download_dir = String::from(::DL_DIR);
+        let mut fnames = vec!["test/torrent.torrent", ::TEST_FILE];
         let test_files = fnames
-            .iter()
+            .iter_mut()
             .map(|x| Torrent::new(x.to_string(), download_dir.clone()).unwrap());
-        for torrent in test_files {
+        for mut torrent in test_files {
             torrent.create_files().unwrap();
+            test_read_write_torrent(&mut torrent);
         }
     }
 
-    /*
-    #[test] 
-    fn test_single_file() {
+    // This needs to be run after create_files
+    fn test_read_write_torrent(torrent: &mut Torrent) {
         let bytes = gen_random_bytes(40);
-        let p1 = PieceData{
-            piece : piece!(20),
-            data : bytes[0..20].to_vec()
+        let p1 = PieceData {
+            piece: piece!(0, 20),
+            data: bytes[0..20].to_vec(),
         };
         let p2 = PieceData {
-            piece : piece!(20),
-            data : bytes[20..40].to_vec()
+            piece: piece!(20, 20),
+            data: bytes[20..40].to_vec(),
         };
 
-        let mut torrent = Torrent::new("bible.torrent".to_string()).unwrap();
-        torrent.write_block(&p2);
-        torrent.write_block(&p1);
-        let p1_2 : PieceData = torrent.read_block(&p1.piece).unwrap();
-        let p2_2 : PieceData = torrent.read_block(&p2.piece).unwrap();
+        torrent.write_block_raw(&p2);
+        torrent.write_block_raw(&p1);
+        let p1_2: PieceData = torrent.read_block_raw(&p1.piece).unwrap();
+        let p2_2: PieceData = torrent.read_block_raw(&p2.piece).unwrap();
 
         assert_eq!(p1, p1_2);
         assert_eq!(p2, p2_2);
-    }*/
+    }
 }
