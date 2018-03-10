@@ -305,6 +305,7 @@ impl Bencodable for MIFile {
 }
 
 // TODO: error handling when a field isn't present
+// TODO: make sure file/piece lengths line up
 impl MetaInfo {
     pub fn info_hash(&self) -> [u8; 20] {
         let bstring = encode(&self.info.to_BencodeT());

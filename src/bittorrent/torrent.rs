@@ -28,6 +28,7 @@ pub struct Torrent {
     files: Vec<BTFile>,
 }
 
+#[derive(PartialEq, Debug, Clone)]
 struct FilePiece {
     path: PathBuf,
     begin: i64, // following convention of i64 for files
@@ -210,11 +211,11 @@ impl Torrent {
 
         let mut iter = self.files.iter();
         let mut total: i64 = 0;
-        let index = piece.file_index(piece_length);
+        let mut index = piece.file_index(piece_length);
         let mut file: &BTFile = iter.next().unwrap();
 
         // Find the first file
-        while (total + (*file).length) < index {
+        while (total + file.length) < index {
             total += file.length;
             file = iter.next().unwrap();
         }
@@ -226,13 +227,17 @@ impl Torrent {
             let load = cmp::min(remaining, file.length - index_in_file);
             remaining -= load as i64;
             total += file.length;
-            file = iter.next().unwrap();
+            index += load;
 
             vec.push(FilePiece {
                 path: file.path.clone(),
                 begin: index_in_file,
                 length: load,
-            })
+            });
+            if remaining == 0 {
+                break;
+            }
+            file = iter.next().unwrap();
         }
 
         return vec;
@@ -249,6 +254,16 @@ macro_rules! piece {
             index : 0,
             begin : 0,
             length : $n,
+        }
+    };
+}
+
+macro_rules! fpiece {
+    ($b : expr, $n : expr) => {
+        FilePiece {
+            path : Default::default(),
+            begin : $b as i64,
+            length : $n as i64,
         }
     };
 }
@@ -310,7 +325,59 @@ fn test_insert_piece() {
 }
 
 #[test]
-fn test_map_files() {}
+fn test_map_files() {
+    let mut torrent = Torrent::new("test/bible.torrent".to_string(), String::new()).unwrap();
+    let piece_length: u32 = torrent.metainfo.info().piece_length as u32;
+    let piece0 = Piece {
+        index: 0,
+        begin: 0,
+        length: piece_length,
+    };
+    let piece1 = Piece {
+        index: 1,
+        begin: 500,
+        length: piece_length,
+    };
+    let piece2 = Piece {
+        index: 3,
+        begin: 500,
+        length: 2 * (piece_length / 4) + 1,
+    };
+    let files = vec![
+        piece_length,
+        piece_length,
+        piece_length,
+        piece_length / 4,
+        0,
+        1,
+        piece_length / 4,
+        500,
+    ];
+    torrent.files = files
+        .iter()
+        .map(|l| BTFile {
+            length: *l as i64,
+            md5sum: None,
+            path: PathBuf::new(),
+        })
+        .collect();
+
+    assert_eq!(torrent.map_files(&piece0), vec![fpiece!(0, piece_length)]);
+    assert_eq!(
+        torrent.map_files(&piece1),
+        vec![fpiece!(500, piece_length - 500), fpiece!(0, 500)]
+    );
+    assert_eq!(
+        torrent.map_files(&piece2),
+        vec![
+            fpiece!(500, (piece_length / 4) - 500),
+            fpiece!(0, 0),
+            fpiece!(0, 1),
+            fpiece!(0, piece_length / 4),
+            fpiece!(0, 500),
+        ]
+    );
+}
 
 #[test]
 fn test_create_files() {
