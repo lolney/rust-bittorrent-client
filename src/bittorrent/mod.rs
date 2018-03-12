@@ -244,7 +244,7 @@ impl Bencodable for bool {
     }
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Hash, Eq)]
 pub struct Piece {
     index: u32,
     begin: u32,

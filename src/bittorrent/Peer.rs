@@ -182,7 +182,6 @@ impl Peer {
         }
     }
 
-    // TODO: error when exceeding 2^14?
     pub fn parse_request(&mut self, msg: &[u8]) -> Result<Action, &'static str> {
         let piece = self.parse_piece_generic(msg);
         self.request_queue.push(piece);
@@ -196,7 +195,7 @@ impl Peer {
         }
     }
 
-    // TODO: error when exceeding 2^14?
+    // TODO: Need to enforce maximum message size
     pub fn parse_piece(&mut self, msg: &[u8], len: u32) -> Result<Action, &'static str> {
         let index = BigEndian::read_u32(&msg[5..9]);
         let begin = BigEndian::read_u32(&msg[9..13]);

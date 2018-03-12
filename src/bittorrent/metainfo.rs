@@ -191,6 +191,20 @@ fn checkHM<'a>(
 }
 
 impl FileInfo {
+    pub fn name(&self) -> &String {
+        match self {
+            &FileInfo::SingleFileInfo {
+                ref name,
+                length,
+                ref md5sum,
+            } => name,
+            &FileInfo::MultiFileInfo {
+                ref name,
+                ref files,
+            } => name,
+        }
+    }
+
     pub fn from_BencodeT(hm: &HashMap<String, BencodeT>) -> Result<FileInfo, ParseError> {
         let name = String::from_BencodeT(hm.get("name").unwrap())?;
         match hm.get("length") {

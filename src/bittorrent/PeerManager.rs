@@ -12,8 +12,6 @@ use std::collections::HashMap;
 use std::thread;
 use std::io::{ErrorKind, Read, Write};
 use std::fmt;
-use std::str::from_utf8;
-use std::fmt::Display;
 use std::cmp::Ordering;
 use bit_vec::BitVec;
 use std::usize::MAX;
@@ -77,6 +75,7 @@ macro_rules! acquire_torrent_lock {
 enum PeerUpdate {
     DownloadSpeed(usize),
     InterestedChange,
+    ChokingChange,
     Have(u32),
     Bitfield(BitVec),
     Disconnect,
@@ -96,6 +95,10 @@ impl PeerUpdate {
             }
             PeerUpdate::InterestedChange => {
                 peers.change_priority_by(peer_id, PeerPriority::flip_interested);
+                true
+            }
+            PeerUpdate::ChokingChange => {
+                peers.change_priority_by(peer_id, PeerPriority::flip_choking);
                 true
             }
             PeerUpdate::Have(piece_index) => {
@@ -124,6 +127,7 @@ enum ManagerUpdate {
 
 struct NewPeerMsg {
     peer_id: [u8; 20],
+    info_hash: [u8; 20],
     comm: ManagerComm,
     priority: PeerPriority,
 }
@@ -185,36 +189,55 @@ impl ManagerComm {
 /// choking or requests
 #[derive(Debug, Clone)]
 struct PeerPriority {
+    info_hash: [u8; 20],
     peer_interested: bool,
     download_speed: usize,
+    peer_choking: bool,
 }
 
 impl PeerPriority {
-    pub fn new() -> PeerPriority {
+    pub fn new(info_hash: [u8; 20]) -> PeerPriority {
         PeerPriority {
+            info_hash: info_hash,
             peer_interested: false,
             download_speed: 0,
+            peer_choking: true,
         }
     }
 
     pub fn flip_interested(peer: PeerPriority) -> PeerPriority {
         PeerPriority {
+            info_hash: peer.info_hash,
             peer_interested: !peer.peer_interested,
             download_speed: peer.download_speed,
+            peer_choking: peer.peer_choking,
+        }
+    }
+
+    pub fn flip_choking(peer: PeerPriority) -> PeerPriority {
+        PeerPriority {
+            info_hash: peer.info_hash,
+            peer_interested: peer.peer_interested,
+            download_speed: peer.download_speed,
+            peer_choking: !peer.peer_choking,
         }
     }
 
     pub fn set_download(self, download_speed: usize) -> PeerPriority {
         PeerPriority {
+            info_hash: self.info_hash,
             peer_interested: self.peer_interested,
             download_speed: download_speed,
+            peer_choking: self.peer_choking,
         }
     }
 
     pub fn set_max(self) -> PeerPriority {
         PeerPriority {
+            info_hash: self.info_hash,
             peer_interested: true,
             download_speed: MAX,
+            peer_choking: self.peer_choking,
         }
     }
 }
@@ -271,6 +294,8 @@ impl PeerManager {
     ) -> Result<(), ParseError> {
         match Torrent::new(metainfo_path, download_path) {
             Ok(torrent) => {
+                // TODO: get list of peers from tracker.
+                // THen bootstrap connections
                 let mut torrents = self.torrents.lock().unwrap();
                 let info_hash = torrent.info_hash();
                 torrents.insert(info_hash, torrent);
@@ -339,58 +364,60 @@ impl PeerManager {
                 Err(e) => {
                     match e.kind() {
                         ErrorKind::WouldBlock => {
-                            break;
+                            comm.send(PeerUpdate::Disconnect);
+                            return;
                         } // timeout
                         _ => error!("Error while reading from stream: {}", e),
                     }
                 }
-                Ok(n) => {
-                    match peer.parse_message(&buf) {
-                        Ok(action) => match (action) {
-                            Action::Request(requests) => {
-                                acquire_torrent_lock!(torrents, peer, torrent);
-                                for req in requests {
-                                    match torrent.read_block(&req) {
-                                        Ok(ref pd) => {
-                                            trace!(
-                                                "Reading piece for peer {:?}: {:?}",
-                                                peer.peer_id(),
-                                                pd
-                                            );
-                                            stream.write(Peer::piece(&pd).as_slice());
-                                        }
-                                        Err(err) => {
-                                            error!("Error while reading block to send to peer {:?}: {}",
-                                                peer.peer_id(), err);
-                                        }
+                Ok(n) => match peer.parse_message(&buf) {
+                    Ok(action) => match (action) {
+                        Action::Request(requests) => {
+                            acquire_torrent_lock!(torrents, peer, torrent);
+                            for req in requests {
+                                match torrent.read_block(&req) {
+                                    Ok(ref pd) => {
+                                        trace!(
+                                            "Reading piece for peer {:?}: {:?}",
+                                            peer.peer_id(),
+                                            pd
+                                        );
+                                        stream.write(Peer::piece(&pd).as_slice());
+                                    }
+                                    Err(err) => {
+                                        error!(
+                                            "Error while sending block to peer {:?}: {}",
+                                            peer.peer_id(),
+                                            err
+                                        );
                                     }
                                 }
                             }
-                            Action::Write(piece) => {
-                                trace!("Writing piece from peer {:?}: {:?}", peer.peer_id(), piece);
-                                download_size = download_size + piece.piece.length;
-                                acquire_torrent_lock!(torrents, peer, torrent);
-                                torrent.write_block(&piece);
-                            }
-                            Action::InterestedChange => {
-                                trace!(
-                                    "Peer {:?} interested status now: {:?}",
-                                    peer.peer_id(),
-                                    peer.peer_interested
-                                );
-                                comm.send(PeerUpdate::InterestedChange);
-                            }
-                            Action::None => {}
-                        },
-                        Err(e) => {
-                            error!(
-                                "Error while parsing incoming message from peer {:?}: {}",
-                                peer.peer_id(),
-                                e
-                            );
                         }
+                        Action::Write(piece) => {
+                            trace!("Writing piece from peer {:?}: {:?}", peer.peer_id(), piece);
+                            download_size = download_size + piece.piece.length;
+                            acquire_torrent_lock!(torrents, peer, torrent);
+                            torrent.write_block(&piece);
+                        }
+                        Action::InterestedChange => {
+                            trace!(
+                                "Peer {:?} interested status now: {:?}",
+                                peer.peer_id(),
+                                peer.peer_interested
+                            );
+                            comm.send(PeerUpdate::InterestedChange);
+                        }
+                        Action::None => {}
+                    },
+                    Err(e) => {
+                        error!(
+                            "Error while parsing incoming message from peer {:?}: {}",
+                            peer.peer_id(),
+                            e
+                        );
                     }
-                }
+                },
             };
 
             // match inc commands from the manager
@@ -439,7 +466,10 @@ impl PeerManager {
     - Peer with better download rate becomes interest: choke worst uploader
     - Maintain one Peer, regardless of download rate
     */
-    fn manage_choking(recv: mpsc::Receiver<NewPeerMsg>) {
+    fn manage_choking(
+        recv: mpsc::Receiver<NewPeerMsg>,
+        torrents: Arc<Mutex<HashMap<[u8; 20], Torrent>>>,
+    ) {
         let max_uploaders = 5;
         let mut peer_priority: PriorityQueue<[u8; 20], PeerPriority> = PriorityQueue::new();
         let mut peers: HashMap<[u8; 20], ManagerComm> = HashMap::new();
@@ -492,6 +522,33 @@ impl PeerManager {
                     i = i + 1;
                 }
             }
+
+            // Select next piece to request
+            let mut torrents = torrents.lock().unwrap();
+            torrents.retain(|info_hash, ref mut torrent| {
+                let mut peers_iter = peer_priority
+                    .iter()
+                    .filter(|&(k, v)| v.peer_choking && v.info_hash == *info_hash);
+                let mut peer = peers_iter.next();
+
+                while peer.is_some() && torrent.nrequests < ::REQUESTS_LIMIT {
+                    match torrent.select_piece() {
+                        Some(piece) => {
+                            // Request piece
+                            torrent.inc_nrequests();
+                            let (id, v) = peer.unwrap();
+                            let comm = peers.get(id).unwrap();
+                            comm.send(ManagerUpdate::Request(Peer::request(&piece)));
+                            peer = peers_iter.next();
+                        }
+                        None => {
+                            info!("{} complete", torrent.name());
+                            return false;
+                        }
+                    }
+                }
+                true
+            });
         }
     }
 
@@ -520,14 +577,15 @@ impl PeerManager {
                     Ok(stream) => {
                         match PeerManager::handle_client(&stream, &torrents) {
                             Ok(peer) => {
-                                info!("New peer connected: {:?}", peer.info_hash());
+                                info!("New peer connected: {:?}", peer.peer_id());
                                 let (manager_comm, peer_comm) = PeerComm::create();
 
                                 manager_send
                                     .send(NewPeerMsg {
-                                        peer_id: peer.info_hash().clone(),
+                                        peer_id: peer.peer_id().clone(),
+                                        info_hash: peer.info_hash().clone(),
                                         comm: manager_comm,
-                                        priority: PeerPriority::new(),
+                                        priority: PeerPriority::new(peer.info_hash().clone()),
                                     })
                                     .or_else(|err| {
                                         error!("Failed to send message for new peer: {}", err);
@@ -551,22 +609,23 @@ impl PeerManager {
             }
         });
 
-        // will need to be moved into own thread
+        let torrents = self.torrents.clone();
         thread::spawn(move || {
-            PeerManager::manage_choking(manager_recv);
+            PeerManager::manage_choking(manager_recv, torrents);
         });
     }
 }
 
 #[cfg(test)]
 mod tests {
-    /*
+    use bittorrent::PeerManager::*;
+
     #[test]
     fn test_send_receive() {
-        manager = PeerManager::new();
-        manager.add_torrent(::TEST_FILE.to_string(), ::DL_DIR.to_string);
-        manager.handle("80");
-        manager.handle("81");
+        let mut manager = PeerManager::new();
+        manager.add_torrent(::TEST_FILE.to_string(), ::DL_DIR.to_string());
+        manager.handle("6000");
+        manager.handle("6001");
     }
-    */
+
 }

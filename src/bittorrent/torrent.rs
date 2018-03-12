@@ -1,5 +1,5 @@
 use bittorrent::{ParseError, Piece, PieceData, metainfo::BTFile, metainfo::MetaInfo};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use bit_vec::BitVec;
 use std::io::Error as IOError;
 use std::io::ErrorKind;
@@ -9,6 +9,8 @@ use rand::random;
 use std::collections::hash_map::Entry;
 use std::cmp;
 use std::path::PathBuf;
+use priority_queue::PriorityQueue;
+use std::time::{Duration, Instant};
 
 /* Need to:
 - Maintain file access to downloading/uploading data; 
@@ -27,6 +29,9 @@ pub struct Torrent {
     bitfield: BitVec,
     map: HashMap<u32, Vec<DLMarker>>, // Piece indices -> indices indicated downloaded parts
     files: Vec<BTFile>,
+    pub nrequests: usize,
+    piece_queue: PriorityQueue<Piece, usize>,
+    outstanding_requests: VecDeque<Request>,
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -34,6 +39,12 @@ struct FilePiece {
     path: PathBuf,
     begin: i64, // following convention of i64 for files
     length: i64,
+}
+
+#[derive(PartialEq, Debug, Clone)]
+struct Request {
+    piece: Piece,
+    time: Instant,
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -62,12 +73,55 @@ impl Torrent {
                     bitfield: BitVec::from_elem(npieces, false),
                     map: HashMap::new(),
                     files: files,
+                    nrequests: 0,
+                    piece_queue: PriorityQueue::new(),
+                    outstanding_requests: VecDeque::new(),
                 })
             }
             Err(e) => Err(ParseError::from_parse_string(
                 String::from("Error adding torrent"),
                 e,
             )),
+        }
+    }
+
+    pub fn name(&self) -> &String {
+        self.metainfo.info().file_info.name()
+    }
+
+    pub fn inc_nrequests(&mut self) {
+        self.nrequests = self.nrequests + 1;
+    }
+
+    fn remove_request(&mut self, piece_data: &PieceData) {
+        self.nrequests = self.nrequests - 1;
+        self.outstanding_requests
+            .retain(|req| req.piece != piece_data.piece);
+    }
+
+    /// select the next piece to be requested
+    pub fn select_piece(&mut self) -> Option<Piece> {
+        let timeout = Duration::from_secs(::READ_TIMEOUT);
+        let front = self.outstanding_requests.pop_front();
+        // Try to take an expired outstanding request first
+        if front.is_some() {
+            let front = front.unwrap();
+            if front.time.elapsed() >= timeout {
+                return Some(front.piece);
+            } else {
+                self.outstanding_requests.push_front(front)
+            }
+        }
+        // Take front the piece queue otherwise
+        match self.piece_queue.pop() {
+            Some((piece, _)) => {
+                self.outstanding_requests.push_back(Request {
+                    piece: piece.clone(),
+                    time: Instant::now(),
+                });
+                Some(piece)
+            }
+            None => None,
         }
     }
 
@@ -84,6 +138,7 @@ impl Torrent {
 
     /// Write block after verifying that hash is correct
     pub fn write_block(&mut self, piece: &PieceData) -> Result<(), IOError> {
+        self.remove_request(piece);
         if self.metainfo.info().valid_hash(piece) {
             self.write_block_raw(piece)
         } else {
