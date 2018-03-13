@@ -8,11 +8,14 @@ extern crate bit_vec;
 extern crate byteorder;
 #[macro_use]
 extern crate log;
-#[macro_use]
-extern crate nom;
 extern crate priority_queue;
 extern crate rand;
 extern crate sha1;
+
+extern crate futures;
+extern crate hyper;
+extern crate tokio_core;
+extern crate url;
 
 mod bittorrent;
 
@@ -29,3 +32,5 @@ const DL_DIR: &'static str = "test/test";
 const TEST_FILE: &'static str = "test/bible.torrent";
 /// Max outstanding requests per torrent
 const REQUESTS_LIMIT: usize = 1;
+const MAX_PEERS: usize = 30;
+const PORT_NUM: usize = 6881;

@@ -10,7 +10,7 @@ mod bedecoder;
 mod utils;
 mod torrent;
 mod Peer;
-mod Trackers;
+mod tracker;
 mod metainfo;
 mod PeerManager;
 
@@ -154,6 +154,26 @@ impl Bencodable for Vec<BencodeT> {
     }
 }
 
+impl<T: Bencodable> Bencodable for Vec<T> {
+    fn to_BencodeT(self) -> BencodeT {
+        BencodeT::List(self.iter().map(|x| x.to_BencodeT()).collect())
+    }
+    fn from_BencodeT(bencode_t: &BencodeT) -> Result<Vec<T>, ParseError> {
+        match bencode_t {
+            &BencodeT::List(ref list) => {
+                let vec = Vec::new();
+                for elem in list {
+                    vec.push(T::from_BencodeT(elem)?);
+                }
+                Ok(vec)
+            }
+            _ => Err(ParseError::new_str(
+                "Attempted to convert non-list BencodeT to vector",
+            )),
+        }
+    }
+}
+
 impl Bencodable for i64 {
     fn to_BencodeT(self) -> BencodeT {
         BencodeT::Integer(self)
@@ -268,6 +288,5 @@ impl Piece {
 #[derive(PartialEq, Debug, Clone)]
 pub struct PieceData {
     piece: Piece,
-    //info_hash : [u8 ; 20], // note: not sure why this was here, but leaving in case
     data: Vec<u8>,
 }

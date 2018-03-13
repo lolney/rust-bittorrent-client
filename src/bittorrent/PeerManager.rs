@@ -1,11 +1,12 @@
 extern crate core;
 
 use bittorrent::{metainfo, ParseError, Peer::Action, Peer::Peer, Peer::PeerInfo, Piece,
-                 torrent::Torrent};
-use std::net::{TcpListener, TcpStream};
+                 torrent::Torrent, tracker::Tracker};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::time::{Duration, Instant, SystemTime};
 use std::error::Error;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::mpsc;
 use priority_queue::PriorityQueue;
 use std::collections::HashMap;
@@ -294,15 +295,25 @@ impl PeerManager {
     ) -> Result<(), ParseError> {
         match Torrent::new(metainfo_path, download_path) {
             Ok(torrent) => {
-                // TODO: get list of peers from tracker.
-                // THen bootstrap connections
-                let mut torrents = self.torrents.lock().unwrap();
-                let info_hash = torrent.info_hash();
-                torrents.insert(info_hash, torrent);
+                let peers = Tracker::get_peers(
+                    torrent.info_hash(),
+                    self.peer_id,
+                    torrent.trackers(),
+                    PeerManager::bootstrap_connection,
+                );
+                {
+                    let mut torrents = self.torrents.lock().unwrap();
+                    let info_hash = torrent.info_hash();
+                    torrents.insert(info_hash, torrent);
+                }
                 Ok(())
             }
             Err(err) => Err(err),
         }
+    }
+
+    pub fn bootstrap_connection(peer: PeerInfo) {
+        PeerManager::connect(TcpStream::connect(peer.ip, peer.port));
     }
 
     /// Handle incoming clients
@@ -469,6 +480,7 @@ impl PeerManager {
     fn manage_choking(
         recv: mpsc::Receiver<NewPeerMsg>,
         torrents: Arc<Mutex<HashMap<[u8; 20], Torrent>>>,
+        npeers: AtomicUsize,
     ) {
         let max_uploaders = 5;
         let mut peer_priority: PriorityQueue<[u8; 20], PeerPriority> = PriorityQueue::new();
@@ -501,12 +513,16 @@ impl PeerManager {
             // this determination will probably not happen whenever possible
             peers.retain(|peer_id, comm| {
                 let mut bitfield = bitfields.entry(peer_id.clone()).or_insert(BitVec::new());
-                PeerManager::process_queue(
+                let disconnected = PeerManager::process_queue(
                     &mut comm.try_iter(),
                     &mut peer_priority,
                     bitfield,
                     &peer_id,
-                )
+                );
+                if disconnected {
+                    npeers.fetch_sub(1, AtomicOrdering::SeqCst);
+                }
+                disconnected
             });
 
             // Keep best uploaders unchoked
@@ -542,7 +558,7 @@ impl PeerManager {
                             peer = peers_iter.next();
                         }
                         None => {
-                            info!("{} complete", torrent.name());
+                            info!("Torrent \"{}\" complete", torrent.name());
                             return false;
                         }
                     }
@@ -552,11 +568,58 @@ impl PeerManager {
         }
     }
 
+    pub fn connect(stream: TcpStream, npeers: AtomicUsize) {
+        match stream {
+            Ok(stream) => {
+                if npeers.load(AtomicOrdering::SeqCst) >= ::MAX_PEERS {
+                    stream.shutdown(Shutdown::Both);
+                    warn!(
+                        "Max numbers of peers {} reached; rejecting new connection",
+                        ::MAX_PEERS
+                    );
+                } else {
+                    match PeerManager::handle_client(&stream, &torrents) {
+                        Ok(peer) => {
+                            info!("New peer connected: {:?}", peer.peer_id());
+                            npeers.fetch_add(1, AtomicOrdering::SeqCst);
+                            let (manager_comm, peer_comm) = PeerComm::create();
+
+                            manager_send
+                                .send(NewPeerMsg {
+                                    peer_id: peer.peer_id().clone(),
+                                    info_hash: peer.info_hash().clone(),
+                                    comm: manager_comm,
+                                    priority: PeerPriority::new(peer.info_hash().clone()),
+                                })
+                                .or_else(|err| {
+                                    error!("Failed to send message for new peer: {}", err);
+                                    Err(err)
+                                });
+
+                            thread::spawn(move || {
+                                // manages new connection
+                                PeerManager::receive(peer, stream, torrents, peer_comm);
+                            });
+                        }
+                        Err(err) => {
+                            stream.shutdown(Shutdown::Both);
+                            warn!("Dropping peer for improperly formatted handshake: {}", err);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Connection failed: {}", e);
+            }
+        }
+    }
+
     pub fn handle(&mut self, port: &'static str) {
         // "127.0.0.1:80"
         let torrents = self.torrents.clone();
 
         let (manager_send, manager_recv) = mpsc::channel();
+        let mut npeers = AtomicUsize::new(0);
 
         thread::spawn(move || {
             // listens for incoming connections
@@ -573,45 +636,13 @@ impl PeerManager {
                 /*let (p,c) = unsafe { 
                     bounded_fast::new(10);
                 };*/
-                match stream {
-                    Ok(stream) => {
-                        match PeerManager::handle_client(&stream, &torrents) {
-                            Ok(peer) => {
-                                info!("New peer connected: {:?}", peer.peer_id());
-                                let (manager_comm, peer_comm) = PeerComm::create();
-
-                                manager_send
-                                    .send(NewPeerMsg {
-                                        peer_id: peer.peer_id().clone(),
-                                        info_hash: peer.info_hash().clone(),
-                                        comm: manager_comm,
-                                        priority: PeerPriority::new(peer.info_hash().clone()),
-                                    })
-                                    .or_else(|err| {
-                                        error!("Failed to send message for new peer: {}", err);
-                                        Err(err)
-                                    });
-
-                                thread::spawn(move || {
-                                    // manages new connection
-                                    PeerManager::receive(peer, stream, torrents, peer_comm);
-                                });
-                            }
-                            Err(err) => {
-                                warn!("Dropping peer for improperly formatted handshake: {}", err);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("Connection failed: {}", e);
-                    }
-                }
+                PeerManager::connect(stream)
             }
         });
 
         let torrents = self.torrents.clone();
         thread::spawn(move || {
-            PeerManager::manage_choking(manager_recv, torrents);
+            PeerManager::manage_choking(manager_recv, torrents, npeers);
         });
     }
 }

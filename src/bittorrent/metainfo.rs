@@ -77,13 +77,14 @@ macro_rules! string_field {
     }
 }
 
+/// Treating $x as both a variable and the name of a field, insert that field into hm
 macro_rules! insert_elems {
     ($hm:expr,$($x:ident),*) => {
         $($hm.insert(String::from(stringify!($x)), $x.clone().to_BencodeT());)*
     }
 }
 
-/// Used in to_BencodeT to convert optional string fields to BencodeT
+/// Used in to_BencodeT to convert optional fields to BencodeT
 macro_rules! string_optional {
     ($t:expr,$hm:expr,$($x:ident),*) => {
         $(match $t.$x {
@@ -93,6 +94,7 @@ macro_rules! string_optional {
     }
 }
 
+/// Similar to string_optional, but takes t.x as a parameter instead of t and x separately
 macro_rules! insert_elems_optional {
     ($hm:expr,$($x:ident),*) => {
         $(match $x {
@@ -103,13 +105,17 @@ macro_rules! insert_elems_optional {
 }
 /*
 macro_rules! get_keys {
-    ($($key:ident),*) => {
+    ($($key:ident, $optional:expr),*) => {
+        MetaInfo{
         $(
-            let info = match hm.get("info") {
+            if($optional) {
+            $key: match hm.get(stringify!($key)) {
                     Some(info) => from_BencodeT(info),
-                    None => Err(ParseError{msg: format!("Bencoded object does not contain key: {}", "info")})
-                }
-        )
+                    None => Err(ParseError::new(format!("Bencoded object does not contain key: {}", "info")))
+                },
+            }
+        )*
+        }
     }
 }*/
 
@@ -121,8 +127,7 @@ fn hash(bytes: &[u8]) -> [u8; 20] {
 
 /// In to_BencodeT: inserts a vector into the hm, converting elems to BencodeT
 fn insert_vector<T: Bencodable>(hm: &mut HashMap<String, BencodeT>, string: String, vec: &Vec<T>) {
-    let bvec = vec.iter().map(|x| x.clone().to_BencodeT()).collect();
-    hm.insert(String::from(string), BencodeT::List(bvec));
+    hm.insert(String::from(string), vec.to_BencodeT());
 }
 
 /// In from_BencodeT: inserts a vector into the hm, converting elems to BencodeT
@@ -337,6 +342,15 @@ impl MetaInfo {
         &self.info
     }
 
+    pub fn trackers(&self) -> Vec<String> {
+        if self.announce_list.is_some() {
+            return self.announce_list.unwrap().clone();
+        } else if self.announce.is_some() {
+            return vec![self.announce.unwrap()];
+        }
+        panic!("Metainfo contains neither announce nor anounce-list");
+    }
+
     /// Create a torrent file from the given paths
     pub fn create(files: Vec<PathBuf>) -> Result<(), ParseError> {
         unimplemented!();
@@ -389,7 +403,8 @@ impl MetaInfo {
 
         match &self.announce_list {
             &Some(ref vec) => {
-                insert_vector(&mut hm, "announce-list".to_string(), vec);
+                let wrapped: Vec<Vec<String>> = vec.iter().map(|elem| vec![elem.clone()]).collect();
+                insert_vector(&mut hm, "announce-list".to_string(), &wrapped);
             }
             &None => {}
         }

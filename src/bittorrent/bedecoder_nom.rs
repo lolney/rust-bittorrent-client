@@ -1,4 +1,4 @@
-use nom::*;
+/*use nom::*;
 
 use std::result::Result;
 use std::str;
@@ -35,3 +35,4 @@ fn my_function(input: &[u8]) -> IResult<&[u8], &[u8]> {
 fn test() {
     assert_eq!(my_function(&b"10000"[..]),IResult::Done(&b"0000"[..],&b"1"[..]));;
 }
+*/

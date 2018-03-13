@@ -30,7 +30,7 @@ pub struct Torrent {
     map: HashMap<u32, Vec<DLMarker>>, // Piece indices -> indices indicated downloaded parts
     files: Vec<BTFile>,
     pub nrequests: usize,
-    piece_queue: PriorityQueue<Piece, usize>,
+    piece_queue: PriorityQueue<Piece, usize>, // to be determined by rarity
     outstanding_requests: VecDeque<Request>,
 }
 
@@ -83,6 +83,10 @@ impl Torrent {
                 e,
             )),
         }
+    }
+
+    pub fn trackers(&self) -> Vec<String> {
+        self.metainfo.trackers()
     }
 
     pub fn name(&self) -> &String {
