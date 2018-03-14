@@ -5,3 +5,7 @@
 \.vscode/
 
 test/test/
+
+test/threadtest
+
+test/threadtest\.rs

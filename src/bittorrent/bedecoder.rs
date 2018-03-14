@@ -2,21 +2,6 @@ use std::collections::HashMap;
 
 use bittorrent::BencodeT;
 use bittorrent::utils::{create_strings, parse_i64};
-/*
-#[derive(Debug)]
-struct ParseError;
-
-impl Error for ParseError {
-    fn description(&self) -> &str {
-        "Something bad happened"
-    }
-}
-
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Oh no, something bad went down")
-    }
-}*/
 
 /// # Arguments
 /// # * `inbytes` - bencoded data
@@ -216,7 +201,7 @@ mod tests {
 
     use bittorrent::BencodeT;
     use bittorrent::bencoder::encode;
-    use bittorrent::utils::{create_strings};
+    use bittorrent::utils::create_strings;
 
     #[test]
     fn strings() {

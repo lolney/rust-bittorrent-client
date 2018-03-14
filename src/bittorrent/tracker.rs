@@ -1,6 +1,6 @@
 /* Tracker communication handled here
 */
-use bittorrent::Peer::{Peer, PeerInfo};
+use bittorrent::Peer::{Peer, PeerInfo, to_keys, keys};
 use futures::{Future, Stream};
 use hyper::Client;
 use tokio_core::reactor::Core;
@@ -14,6 +14,95 @@ pub struct Tracker {
     min_interval: Option<i64>,
     complete: i64,
     incomplete: i64,
+}
+
+#[derive(Debug)]
+pub struct TrackerResponse {
+    warning_message: Option<String>,
+    interval : i64,
+    min_interval : Option<i64>,
+    tracker_id : String,
+    complete : i64,
+    incomplete : i64,
+    peers : Vec<TrackerPeer>,
+}
+
+impl TrackerResponse {
+    fn from_BencodeT(bencode_t: &BencodeT) -> Result<String, ParseError> {
+        match bencode_t {
+            &BencodeT::Dictionary(ref hm) => {
+                if Some(val) = hm.get("failure reason") {
+                    return parse_error!(
+                        "Tracker returned failure: {:?}", val
+                    );
+                }
+                keys!(TrackerResponse::Dictionary, hm,
+                    (warning_message, Option<String>)
+                    (interval , i64)
+                    (min_interval , Option<i64>)
+                    (tracker_id , String)
+                    (complete , i64)
+                    (incomplete , i64)
+                    (peers, Vec<TrackerPeer>)
+                )
+            },
+            _ => Err(parse_error!(
+                "Tracker response is not a dictionary: {:?}", bencode_t
+            )),
+        }
+    }
+}
+
+pub enum TrackerPeer {
+    Dictionary(peer_id: [u8;20], ip : String, port : usize),
+    Binary(ip : String, port : usize),
+}
+
+impl TrackerPeer {
+    pub fn from_binary(bytes: [u8;6]) -> TrackerPeer {
+        TrackerPeer::Binary(
+            ip: BigEndian::read_u32(bytes[0..4]).to_string(),
+            port: BigEndian::read_u16(bytes[4..6] as usize,
+        )
+    }
+
+    pub fn to_binary(ip : String, port : usize) -> [u8;6] {
+        return unsafe { BencodeT::String(String::from_utf8_unchecked(vec)) }
+    }
+}
+
+impl Bencodable for TrackerPeer {
+    fn to_BencodeT(self) -> BencodeT {
+        match self {
+            TrackerPeer::Binary(ip, port) => {
+                let bytes = TrackerPeer::to_binary(ip, port);
+                return unsafe { BencodeT::String(String::from_utf8_unchecked(bytes)) };
+            },
+            TrackerPeer::Dictionary(peer_id, ip, port) => {
+                hm = to_keys!{ 
+                    (peer_id, [u8;20]),
+                    (ip, String),
+                    (port, usize),
+                }; 
+                BencodeT::Dictionary(hm);
+            }
+        }
+    }
+    fn from_BencodeT(bencode_t: &BencodeT) -> Result<TrackerPeer, ParseError> {
+        match bencode_t {
+            &BencodeT::String(ref string) => Ok(from_binary(string.as_bytes())),
+            &BencodeT::Dictionary(ref hm) => {
+                Ok(keys!(TrackerPeer::Dictionary, hm,
+                    (peer_id, [u8;20]),
+                    (ip, String),
+                    (port, usize),
+                ))
+            },
+            _ => Err(parse_error!(
+                "Attempted to create TrackerPeer with non-string or dict: {:?}", bencode_t
+            )),
+        }
+    }
 }
 
 trait Serializable {
@@ -76,34 +165,27 @@ impl Tracker {
         let uri = url.parse()?;
         let work = client.get(uri).map(|res| {
             let peerinfos = Tracker::parse_response(res.body);
+            // Callback launches a thread. Can checking the response be deferred until there?
             callback(peerinfos);
         });
         core.run(work)?;
     }
 
     fn parse_response(body : &[u8]) -> Result<Vec<PeerInfo>, ParseError>{
-        let bencodet = parse(body);
-        match bencodet {
-            &BencodeT::Dictionary(ref hm) => Ok(MetaInfo {
-                failure_reason: elem_from_entry(hm, "failure reason"),
-                announce_list: match hm.get("announce-list") {
-                    Some(vec) => Some(checkVec(Vec::from_BencodeT(vec)?, convert)?),
-                    None => None,
-                },
-                warning_message: elem_from_entry(hm, "warning message"),
-                interval,
-                min_interval,
-                tracker_id,
-                
-            }),
-            _ => Err(ParseError::new_str(
-                "MetaInfo file not formatted as dictionary",
-            )),
-        }
+        let bencodet = parse(body)?;
+        let response = TrackerResponse::from_BencodeT(bencodet)?;
+        return Ok(response.peers);
     }
 
     pub fn announce() {}
 
     /// Queries the state of a given torrent
     pub fn scrape() {}
+}
+
+#[cfg(test)]
+mod tests {
+
+    use bittorrent::tracker::*;
+
 }

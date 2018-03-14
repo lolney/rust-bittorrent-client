@@ -85,6 +85,63 @@ impl fmt::Display for ParseError {
     }
 }
 
+/// Keys has two implementations: for Option<T : Bencodable> or  T: Bencodable
+/// Meant to be able to handle those types generically when converting from Bencoded dict
+pub trait Keys {
+    fn keys<'a>(opt: Option<&'a BencodeT>) -> Result<Self, ParseError>;
+    fn to_value(self) -> Option<Self>;
+}
+
+impl<T: Bencodable> Keys for Option<T> {
+    fn keys<'a>(opt: Option<&'a BencodeT>) -> Result<Option<T>, ParseError> {
+        if opt.is_some {
+            Ok(Some(T::from_BencodeT(opt.unwrap())?))
+        } else {
+            Ok(None)
+        }
+    }
+    fn to_value(self) -> Option<T> {
+        self
+    }
+}
+
+impl<T: Bencodable> Keys for T {
+    fn keys<'a>(opt: Option<&'a BencodeT>) -> Result<Self, ParseError> {
+        T::from_BencodeT(opt.unwrap())
+    }
+    fn to_value(self) -> Option<T> {
+        Some(self)
+    }
+}
+
+/// Used to construct a struct from entries in a BencodeT Hashmap
+macro_rules! get_keys {
+    ($Struct:ident, $hm:expr, $(($key:ident, $T:ident)),*) => {
+        $Struct{
+        $(
+            $key: $T::keys($hm.get(stringify!($key)))?,
+        )*
+        }
+    }
+}
+
+/// Used to turn into bencoded objects
+macro_rules! to_keys {
+    ($(($key:ident, $T:ident)),*) => {
+        {
+            let hm = HashMap::new();
+            $(  
+                match $key.to_value() {
+                    Some(v) => hm.insert(stringify!($key), v.to_BencodeT()),
+                    None => (),
+                }
+                
+            )*
+            hm
+        }
+    }
+}
+
 pub trait Bencodable: Clone {
     fn to_BencodeT(self) -> BencodeT;
     fn from_BencodeT(bencode_t: &BencodeT) -> Result<Self, ParseError>
@@ -124,6 +181,24 @@ impl Bencodable for String {
             )),
         }
     }
+}
+
+impl Bencodable for [u8; 20] {
+    fn to_BencodeT(self) -> BencodeT {
+        return unsafe { BencodeT::String(String::from_utf8_unchecked(self)) }
+    }
+    fn from_BencodeT(bencode_t: &BencodeT) -> Result<[u8;20], ParseError> {
+        match bencode_t {
+            &BencodeT::String(ref string) => {
+                let mut a: [u8; 20] = Default::default();
+                a.copy_from_slice(string.as_bytes());
+                Ok(a)
+            },
+            _ => Err(parse_error!(
+                "Attempted to convert non-string BencodeT to [u8;20]: {:?}",
+                bencode_t
+            )),
+        }
 }
 
 impl Bencodable for HashMap<String, BencodeT> {

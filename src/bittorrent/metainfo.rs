@@ -103,21 +103,6 @@ macro_rules! insert_elems_optional {
         })*
     }
 }
-/*
-macro_rules! get_keys {
-    ($($key:ident, $optional:expr),*) => {
-        MetaInfo{
-        $(
-            if($optional) {
-            $key: match hm.get(stringify!($key)) {
-                    Some(info) => from_BencodeT(info),
-                    None => Err(ParseError::new(format!("Bencoded object does not contain key: {}", "info")))
-                },
-            }
-        )*
-        }
-    }
-}*/
 
 fn hash(bytes: &[u8]) -> [u8; 20] {
     let mut sha = Sha1::new();
