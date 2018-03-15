@@ -1,6 +1,9 @@
 /* Tracker communication handled here
 */
-use bittorrent::Peer::{Peer, PeerInfo, to_keys, keys};
+use bittorrent::{keys. to_keys, parse_error, Bencodable, BencodeT, ParseError};
+use bittorrent::Peer::{Peer, PeerInfo};
+use bittorrent::bedecoder::parse;
+use byteorder::BigEndian;
 use futures::{Future, Stream};
 use hyper::Client;
 use tokio_core::reactor::Core;
@@ -31,7 +34,7 @@ impl TrackerResponse {
     fn from_BencodeT(bencode_t: &BencodeT) -> Result<String, ParseError> {
         match bencode_t {
             &BencodeT::Dictionary(ref hm) => {
-                if Some(val) = hm.get("failure reason") {
+                if let Some(val) = hm.get("failure reason") {
                     return parse_error!(
                         "Tracker returned failure: {:?}", val
                     );
@@ -54,32 +57,35 @@ impl TrackerResponse {
 }
 
 pub enum TrackerPeer {
-    Dictionary(peer_id: [u8;20], ip : String, port : usize),
-    Binary(ip : String, port : usize),
+    Dictionary{peer_id: [u8;20], ip : String, port : usize},
+    Binary{ip : String, port : usize},
 }
 
 impl TrackerPeer {
     pub fn from_binary(bytes: [u8;6]) -> TrackerPeer {
-        TrackerPeer::Binary(
+        TrackerPeer::Binary{
             ip: BigEndian::read_u32(bytes[0..4]).to_string(),
             port: BigEndian::read_u16(bytes[4..6] as usize,
-        )
+        }
     }
 
     pub fn to_binary(ip : String, port : usize) -> [u8;6] {
-        return unsafe { BencodeT::String(String::from_utf8_unchecked(vec)) }
+        let mut buf : [u8;6] = [0;6];
+        BigEndian::write_u32(&buf[0..4], ip.parse::<u32>().unwrap());
+        BigEndian::write_u16(&buf[4..6], port as u16);
+        return buf;
     }
 }
 
 impl Bencodable for TrackerPeer {
     fn to_BencodeT(self) -> BencodeT {
         match self {
-            TrackerPeer::Binary(ip, port) => {
+            &TrackerPeer::Binary{ref ip, port} => {
                 let bytes = TrackerPeer::to_binary(ip, port);
                 return unsafe { BencodeT::String(String::from_utf8_unchecked(bytes)) };
             },
-            TrackerPeer::Dictionary(peer_id, ip, port) => {
-                hm = to_keys!{ 
+            &TrackerPeer::Dictionary{ref peer_id, ip, port} => {
+                let hm = to_keys!{ 
                     (peer_id, [u8;20]),
                     (ip, String),
                     (port, usize),
@@ -90,7 +96,7 @@ impl Bencodable for TrackerPeer {
     }
     fn from_BencodeT(bencode_t: &BencodeT) -> Result<TrackerPeer, ParseError> {
         match bencode_t {
-            &BencodeT::String(ref string) => Ok(from_binary(string.as_bytes())),
+            &BencodeT::String(ref string) => Ok(TrackerPeer::from_binary(string.as_bytes())),
             &BencodeT::Dictionary(ref hm) => {
                 Ok(keys!(TrackerPeer::Dictionary, hm,
                     (peer_id, [u8;20]),

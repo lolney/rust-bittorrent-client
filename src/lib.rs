@@ -17,7 +17,8 @@ extern crate hyper;
 extern crate tokio_core;
 extern crate url;
 
-mod bittorrent;
+#[macro_use]
+pub mod bittorrent;
 
 const HSLEN: usize = 68; // 49 + 19
 const PSTRLEN: u8 = 19;

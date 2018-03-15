@@ -1,6 +1,6 @@
 extern crate core;
 
-use bittorrent::{metainfo, ParseError, Peer::Action, Peer::Peer, Peer::PeerInfo, Piece,
+use bittorrent::{metainfo, torrent, ParseError, Peer::Action, Peer::Peer, Peer::PeerInfo, Piece,
                  torrent::Torrent, tracker::Tracker};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::time::{Duration, Instant, SystemTime};
@@ -29,6 +29,7 @@ pub struct PeerManager {
     */
     torrents: Arc<Mutex<HashMap<[u8; 20], Torrent>>>, // u8 is the Info_hash
     peer_id: [u8; 20],                                // our peer id
+    npeers: AtomicUsize,
 }
 
 #[derive(Debug)]
@@ -299,7 +300,9 @@ impl PeerManager {
                     torrent.info_hash(),
                     self.peer_id,
                     torrent.trackers(),
-                    PeerManager::bootstrap_connection,
+                    |peer| {
+                        PeerManager::bootstrap_connection(peer, self.torrents.clone, &self.npeers)
+                    },
                 );
                 {
                     let mut torrents = self.torrents.lock().unwrap();
@@ -312,8 +315,12 @@ impl PeerManager {
         }
     }
 
-    pub fn bootstrap_connection(peer: PeerInfo) {
-        PeerManager::connect(TcpStream::connect(peer.ip, peer.port));
+    pub fn bootstrap_connection(
+        peer: PeerInfo,
+        torrents: Arc<Mutex<HashMap<[u8; 20], Torrent>>>,
+        npeers: &AtomicUsize,
+    ) {
+        PeerManager::connect(TcpStream::connect(peer.ip, peer.port), torrents, npeers);
     }
 
     /// Handle incoming clients
@@ -568,7 +575,11 @@ impl PeerManager {
         }
     }
 
-    pub fn connect(stream: TcpStream, npeers: AtomicUsize) {
+    pub fn connect(
+        stream: TcpStream,
+        torrents: Arc<Mutex<HashMap<[u8; 20], Torrent>>>,
+        npeers: &AtomicUsize,
+    ) {
         match stream {
             Ok(stream) => {
                 if npeers.load(AtomicOrdering::SeqCst) >= ::MAX_PEERS {
@@ -584,7 +595,7 @@ impl PeerManager {
                             npeers.fetch_add(1, AtomicOrdering::SeqCst);
                             let (manager_comm, peer_comm) = PeerComm::create();
 
-                            manager_send
+                            manager_comm
                                 .send(NewPeerMsg {
                                     peer_id: peer.peer_id().clone(),
                                     info_hash: peer.info_hash().clone(),
@@ -619,7 +630,7 @@ impl PeerManager {
         let torrents = self.torrents.clone();
 
         let (manager_send, manager_recv) = mpsc::channel();
-        let mut npeers = AtomicUsize::new(0);
+        let mut npeers = &self.npeers;
 
         thread::spawn(move || {
             // listens for incoming connections
@@ -636,7 +647,7 @@ impl PeerManager {
                 /*let (p,c) = unsafe { 
                     bounded_fast::new(10);
                 };*/
-                PeerManager::connect(stream)
+                PeerManager::connect(stream, torrents, npeers)
             }
         });
 

@@ -5,15 +5,6 @@ use std::fmt::Display;
 use std::fmt;
 use std::io::Error as IOError;
 
-mod bencoder;
-mod bedecoder;
-mod utils;
-mod torrent;
-mod Peer;
-mod tracker;
-mod metainfo;
-mod PeerManager;
-
 /* Describes a decoded benencodable object */
 #[derive(PartialEq, Debug, Clone)]
 pub enum BencodeT {
@@ -130,12 +121,12 @@ macro_rules! to_keys {
     ($(($key:ident, $T:ident)),*) => {
         {
             let hm = HashMap::new();
-            $(  
+            $(
                 match $key.to_value() {
                     Some(v) => hm.insert(stringify!($key), v.to_BencodeT()),
                     None => (),
                 }
-                
+
             )*
             hm
         }
@@ -185,20 +176,21 @@ impl Bencodable for String {
 
 impl Bencodable for [u8; 20] {
     fn to_BencodeT(self) -> BencodeT {
-        return unsafe { BencodeT::String(String::from_utf8_unchecked(self)) }
+        return unsafe { BencodeT::String(String::from_utf8_unchecked(self)) };
     }
-    fn from_BencodeT(bencode_t: &BencodeT) -> Result<[u8;20], ParseError> {
+    fn from_BencodeT(bencode_t: &BencodeT) -> Result<[u8; 20], ParseError> {
         match bencode_t {
             &BencodeT::String(ref string) => {
                 let mut a: [u8; 20] = Default::default();
                 a.copy_from_slice(string.as_bytes());
                 Ok(a)
-            },
+            }
             _ => Err(parse_error!(
                 "Attempted to convert non-string BencodeT to [u8;20]: {:?}",
                 bencode_t
             )),
         }
+    }
 }
 
 impl Bencodable for HashMap<String, BencodeT> {
@@ -365,3 +357,12 @@ pub struct PieceData {
     piece: Piece,
     data: Vec<u8>,
 }
+
+mod bencoder;
+mod bedecoder;
+mod utils;
+mod torrent;
+mod Peer;
+mod tracker;
+mod metainfo;
+mod PeerManager;
