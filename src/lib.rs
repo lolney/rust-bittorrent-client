@@ -3,6 +3,9 @@
 //#![feature(inclusive_range_syntax)]
 #![feature(vec_remove_item)]
 #![feature(use_extern_macros)]
+#![feature(iterator_try_fold)]
+#![feature(try_trait)]
+#![feature(proc_macro, conservative_impl_trait, generators)]
 
 extern crate bit_vec;
 extern crate byteorder;
@@ -12,7 +15,7 @@ extern crate priority_queue;
 extern crate rand;
 extern crate sha1;
 
-extern crate futures;
+extern crate futures_await as futures;
 extern crate hyper;
 extern crate tokio_core;
 extern crate url;

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use bittorrent::{Bencodable, BencodeT, ParseError};
+use bittorrent::{hash, Bencodable, BencodeT, ParseError};
 use bittorrent::bencoder::encode;
 use bittorrent::bedecoder::parse;
 use bittorrent::PieceData;
@@ -36,7 +36,7 @@ pub struct MetaInfo {
 #[derive(PartialEq, Debug, Clone)]
 pub struct Info {
     pub piece_length: i64,
-    pub pieces: Vec<[u8; 20]>, // concatination of all 20-byte SHA-1 hash values
+    pub pieces: Vec<hash>, // concatination of all 20-byte SHA-1 hash values
     pub private: Option<bool>,
     pub file_info: FileInfo,
 }
@@ -104,7 +104,7 @@ macro_rules! insert_elems_optional {
     }
 }
 
-fn hash(bytes: &[u8]) -> [u8; 20] {
+fn hash(bytes: &[u8]) -> hash {
     let mut sha = Sha1::new();
     sha.update(bytes);
     sha.digest().bytes()
@@ -318,7 +318,7 @@ impl Bencodable for MIFile {
 // TODO: error handling when a field isn't present
 // TODO: make sure file/piece lengths line up
 impl MetaInfo {
-    pub fn info_hash(&self) -> [u8; 20] {
+    pub fn info_hash(&self) -> hash {
         let bstring = encode(&self.info.to_BencodeT());
         hash(bstring.as_bytes())
     }
@@ -427,17 +427,17 @@ impl Info {
         }
     }
 
-    fn split_hashes(string: String) -> Result<Vec<[u8; 20]>, ParseError> {
+    fn split_hashes(string: String) -> Result<Vec<hash>, ParseError> {
         if string.len() % 20 != 0 {
             return Err(ParseError::new_str("pieces string must be multiple of 20"));
         }
 
-        let mut vec = Vec::<[u8; 20]>::new();
+        let mut vec = Vec::<hash>::new();
 
         for i in 0..string.len() / 20 {
             let s = i * 20;
             let e = (i + 1) * 20;
-            let mut a: [u8; 20] = Default::default();
+            let mut a: hash = Default::default();
             a.copy_from_slice(&string.as_bytes()[s..e]);
             vec.push(a);
         }
@@ -445,7 +445,7 @@ impl Info {
         Ok(vec)
     }
 
-    fn hashes_to_string(hashes: &Vec<[u8; 20]>) -> BencodeT {
+    fn hashes_to_string(hashes: &Vec<hash>) -> BencodeT {
         let mut vec = Vec::<u8>::new();
         for slice in hashes {
             vec.extend_from_slice(slice);

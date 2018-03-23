@@ -1,13 +1,14 @@
 extern crate core;
 
-use bittorrent::{metainfo, torrent, ParseError, Peer::Action, Peer::Peer, Peer::PeerInfo, Piece,
-                 torrent::Torrent, tracker::Tracker};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use bittorrent::{hash, metainfo, torrent, ParseError, Peer::Action, Peer::Peer, Peer::PeerInfo,
+                 Piece, torrent::Torrent, tracker::Tracker};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::time::{Duration, Instant, SystemTime};
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::mpsc;
+use std::sync::mpsc::Sender;
 use priority_queue::PriorityQueue;
 use std::collections::HashMap;
 use std::thread;
@@ -17,6 +18,7 @@ use std::cmp::Ordering;
 use bit_vec::BitVec;
 use std::usize::MAX;
 use log::error;
+use std::io::Error as IOError;
 
 pub struct PeerManager {
     /*
@@ -27,9 +29,10 @@ pub struct PeerManager {
     Must be able to control:
     - Choking/Unchoking
     */
-    torrents: Arc<Mutex<HashMap<[u8; 20], Torrent>>>, // u8 is the Info_hash
-    peer_id: [u8; 20],                                // our peer id
-    npeers: AtomicUsize,
+    torrents: Arc<Mutex<HashMap<hash, Torrent>>>, // u8 is the Info_hash
+    peer_id: hash,                                // our peer id
+    npeers: Arc<AtomicUsize>,
+    manager_send: Option<Sender<NewPeerMsg>>,
 }
 
 #[derive(Debug)]
@@ -86,8 +89,8 @@ enum PeerUpdate {
 impl PeerUpdate {
     fn process(
         self,
-        peer_id: &[u8; 20],
-        peers: &mut PriorityQueue<[u8; 20], PeerPriority>,
+        peer_id: &hash,
+        peers: &mut PriorityQueue<hash, PeerPriority>,
         bitfield: &mut BitVec,
     ) -> bool {
         match self {
@@ -128,8 +131,8 @@ enum ManagerUpdate {
 }
 
 struct NewPeerMsg {
-    peer_id: [u8; 20],
-    info_hash: [u8; 20],
+    peer_id: hash,
+    info_hash: hash,
     comm: ManagerComm,
     priority: PeerPriority,
 }
@@ -191,14 +194,14 @@ impl ManagerComm {
 /// choking or requests
 #[derive(Debug, Clone)]
 struct PeerPriority {
-    info_hash: [u8; 20],
+    info_hash: hash,
     peer_interested: bool,
     download_speed: usize,
     peer_choking: bool,
 }
 
 impl PeerPriority {
-    pub fn new(info_hash: [u8; 20]) -> PeerPriority {
+    pub fn new(info_hash: hash) -> PeerPriority {
         PeerPriority {
             info_hash: info_hash,
             peer_interested: false,
@@ -276,7 +279,7 @@ impl PartialEq for PeerPriority {
 
 impl Eq for PeerPriority {}
 
-fn remove(pq: &mut PriorityQueue<[u8; 20], PeerPriority>, id: &[u8; 20]) {
+fn remove(pq: &mut PriorityQueue<hash, PeerPriority>, id: &hash) {
     pq.change_priority_by(id, |priority| priority.set_max());
     pq.pop();
 }
@@ -286,6 +289,8 @@ impl PeerManager {
         PeerManager {
             torrents: Arc::new(Mutex::new(HashMap::new())),
             peer_id: Peer::gen_peer_id(),
+            npeers: Arc::new(AtomicUsize::new(0)),
+            manager_send: None,
         }
     }
 
@@ -296,14 +301,18 @@ impl PeerManager {
     ) -> Result<(), ParseError> {
         match Torrent::new(metainfo_path, download_path) {
             Ok(torrent) => {
-                let peers = Tracker::get_peers(
-                    torrent.info_hash(),
-                    self.peer_id,
-                    torrent.trackers(),
-                    |peer| {
-                        PeerManager::bootstrap_connection(peer, self.torrents.clone, &self.npeers)
-                    },
-                );
+                let ips =
+                    Tracker::get_peers(torrent.info_hash(), self.peer_id, torrent.trackers())?;
+                for ip in ips {
+                    let channel = self.manager_send
+                        .ok_or(parse_error!(
+                            "Error while sffing torrent: Downloading event loop not yet started"
+                        ))?
+                        .clone();
+                    let torrents = self.torrents.clone();
+                    let npeers = self.npeers.clone();
+                    PeerManager::connect(TcpStream::connect(ip), torrents, npeers, channel)
+                }
                 {
                     let mut torrents = self.torrents.lock().unwrap();
                     let info_hash = torrent.info_hash();
@@ -314,19 +323,25 @@ impl PeerManager {
             Err(err) => Err(err),
         }
     }
-
-    pub fn bootstrap_connection(
-        peer: PeerInfo,
-        torrents: Arc<Mutex<HashMap<[u8; 20], Torrent>>>,
-        npeers: &AtomicUsize,
-    ) {
-        PeerManager::connect(TcpStream::connect(peer.ip, peer.port), torrents, npeers);
-    }
+    /*
+    pub fn bootstrap_connection<F>(&mut self) -> Result<F, ParseError>
+    where
+        F: Fn(SocketAddr),
+    {
+        let channel = self.manager_send
+            .ok_or(parse_error!(
+                "Error while sffing torrent: Downloading event loop not yet started"
+            ))?
+            .clone();
+        let torrents = self.torrents.clone();
+        let npeers = self.npeers.clone();
+        Ok(|sock| PeerManager::connect(TcpStream::connect(sock), torrents, npeers, channel))
+    }*/
 
     /// Handle incoming clients
     fn handle_client(
         stream: &TcpStream,
-        torrents: &Arc<Mutex<HashMap<[u8; 20], Torrent>>>,
+        torrents: &Arc<Mutex<HashMap<hash, Torrent>>>,
     ) -> Result<Peer, NetworkError> {
         let mut buf: [u8; 68] = [0; 68]; // size of handshake: 19 + 49
                                          // read handshake and create peer
@@ -347,8 +362,8 @@ impl PeerManager {
     }
 
     fn match_torrent(
-        info_hash: &[u8; 20],
-        torrents: &Arc<Mutex<HashMap<[u8; 20], Torrent>>>,
+        info_hash: &hash,
+        torrents: &Arc<Mutex<HashMap<hash, Torrent>>>,
     ) -> Result<bool, NetworkError> {
         // Find the matching torrent
         let torrents = torrents.lock().unwrap();
@@ -365,7 +380,7 @@ impl PeerManager {
     fn receive(
         mut peer: Peer,
         mut stream: TcpStream,
-        torrents: Arc<Mutex<HashMap<[u8; 20], Torrent>>>,
+        torrents: Arc<Mutex<HashMap<hash, Torrent>>>,
         comm: PeerComm,
     ) {
         let mut buf = [0; ::MSG_SIZE];
@@ -463,9 +478,9 @@ impl PeerManager {
 
     fn process_queue(
         iter: &mut mpsc::TryIter<PeerUpdate>,
-        peer_priority: &mut PriorityQueue<[u8; 20], PeerPriority>,
+        peer_priority: &mut PriorityQueue<hash, PeerPriority>,
         bitfield: &mut BitVec,
-        peer_id: &[u8; 20],
+        peer_id: &hash,
     ) -> bool {
         match iter.next() {
             Some(msg) => {
@@ -484,15 +499,16 @@ impl PeerManager {
     - Peer with better download rate becomes interest: choke worst uploader
     - Maintain one Peer, regardless of download rate
     */
+    // TODO: This is a strong candidate to be replaced by a task system
     fn manage_choking(
         recv: mpsc::Receiver<NewPeerMsg>,
-        torrents: Arc<Mutex<HashMap<[u8; 20], Torrent>>>,
-        npeers: AtomicUsize,
+        torrents: Arc<Mutex<HashMap<hash, Torrent>>>,
+        npeers: Arc<AtomicUsize>,
     ) {
         let max_uploaders = 5;
-        let mut peer_priority: PriorityQueue<[u8; 20], PeerPriority> = PriorityQueue::new();
-        let mut peers: HashMap<[u8; 20], ManagerComm> = HashMap::new();
-        let mut bitfields: HashMap<[u8; 20], BitVec> = HashMap::new();
+        let mut peer_priority: PriorityQueue<hash, PeerPriority> = PriorityQueue::new();
+        let mut peers: HashMap<hash, ManagerComm> = HashMap::new();
+        let mut bitfields: HashMap<hash, BitVec> = HashMap::new();
 
         let start = Instant::now();
         let ten_secs = Duration::from_secs(10);
@@ -576,9 +592,10 @@ impl PeerManager {
     }
 
     pub fn connect(
-        stream: TcpStream,
-        torrents: Arc<Mutex<HashMap<[u8; 20], Torrent>>>,
-        npeers: &AtomicUsize,
+        stream: Result<TcpStream, IOError>,
+        torrents: Arc<Mutex<HashMap<hash, Torrent>>>,
+        npeers: Arc<AtomicUsize>,
+        manager_send: Sender<NewPeerMsg>,
     ) {
         match stream {
             Ok(stream) => {
@@ -595,7 +612,7 @@ impl PeerManager {
                             npeers.fetch_add(1, AtomicOrdering::SeqCst);
                             let (manager_comm, peer_comm) = PeerComm::create();
 
-                            manager_comm
+                            manager_send
                                 .send(NewPeerMsg {
                                     peer_id: peer.peer_id().clone(),
                                     info_hash: peer.info_hash().clone(),
@@ -630,27 +647,29 @@ impl PeerManager {
         let torrents = self.torrents.clone();
 
         let (manager_send, manager_recv) = mpsc::channel();
-        let mut npeers = &self.npeers;
+
+        let mut npeers = self.npeers.clone();
 
         thread::spawn(move || {
             // listens for incoming connections
             let listener = TcpListener::bind(port).unwrap();
-            for stream in listener.incoming() {
+            listener.incoming().for_each(|stream| {
                 let torrents = torrents.clone();
                 /*
-                - Hashmap for looking up sender for a given peer
-                - Doesn't need to be sent to connection threads
-                - Peers must be accessble to the torrent object,
-                - which decides which peer to request from based
-                on their download rate
-                */
+                    - Hashmap for looking up sender for a given peer
+                    - Doesn't need to be sent to connection threads
+                    - Peers must be accessble to the torrent object,
+                    - which decides which peer to request from based
+                    on their download rate
+                    */
                 /*let (p,c) = unsafe { 
-                    bounded_fast::new(10);
-                };*/
-                PeerManager::connect(stream, torrents, npeers)
-            }
+                        bounded_fast::new(10);
+                    };*/
+                PeerManager::connect(stream, torrents, npeers, manager_send.clone());
+            });
         });
 
+        self.manager_send = Some(manager_send);
         let torrents = self.torrents.clone();
         thread::spawn(move || {
             PeerManager::manage_choking(manager_recv, torrents, npeers);

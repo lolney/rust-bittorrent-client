@@ -1,4 +1,4 @@
-use bittorrent::{ParseError, Piece, PieceData, metainfo::BTFile, metainfo::MetaInfo};
+use bittorrent::{hash, ParseError, Piece, PieceData, metainfo::BTFile, metainfo::MetaInfo};
 use std::collections::{HashMap, VecDeque};
 use bit_vec::BitVec;
 use std::io::Error as IOError;
@@ -211,7 +211,7 @@ impl Torrent {
         })
     }
 
-    pub fn info_hash(&self) -> [u8; 20] {
+    pub fn info_hash(&self) -> hash {
         return self.metainfo.info_hash();
     }
 

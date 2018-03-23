@@ -4,6 +4,8 @@ use std::path::Path;
 use std::fmt::Display;
 use std::fmt;
 use std::io::Error as IOError;
+use hyper::error::Error as HyperError;
+use hyper::error::UriError;
 
 /* Describes a decoded benencodable object */
 #[derive(PartialEq, Debug, Clone)]
@@ -18,7 +20,11 @@ pub enum BencodeT {
 pub enum ParseError {
     Parse(String),
     IO(String, IOError),
+    Hyper(String, HyperError),
+    Uri(String, UriError),
 }
+
+pub type hash = [u8; 20];
 
 impl ParseError {
     pub fn new(string: String) -> ParseError {
@@ -32,6 +38,14 @@ impl ParseError {
 
     pub fn new_cause(string: &str, cause: IOError) -> ParseError {
         ParseError::IO(String::from(string), cause)
+    }
+
+    pub fn new_hyper(string: &str, cause: HyperError) -> ParseError {
+        ParseError::Hyper(String::from(string), cause)
+    }
+
+    pub fn new_uri(string: &str, cause: UriError) -> ParseError {
+        ParseError::Uri(String::from(string), cause)
     }
 
     pub fn from_parse(string: &str, cause: ParseError) -> ParseError {
@@ -49,11 +63,31 @@ impl From<IOError> for ParseError {
     }
 }
 
+impl From<HyperError> for ParseError {
+    fn from(error: HyperError) -> Self {
+        ParseError::new_hyper("", error)
+    }
+}
+
+impl From<String> for ParseError {
+    fn from(error: String) -> Self {
+        ParseError::new(error)
+    }
+}
+
+impl From<UriError> for ParseError {
+    fn from(error: UriError) -> Self {
+        ParseError::new_uri("", error)
+    }
+}
+
 impl Error for ParseError {
     fn description(&self) -> &str {
         match self {
             &ParseError::Parse(ref string) => string.as_str(),
             &ParseError::IO(ref string, ref ioerror) => string.as_str(),
+            &ParseError::Hyper(ref string, ref error) => string.as_str(),
+            &ParseError::Uri(ref string, ref error) => string.as_str(),
         }
     }
 
@@ -61,6 +95,8 @@ impl Error for ParseError {
         match self {
             &ParseError::Parse(ref string) => None,
             &ParseError::IO(ref string, ref ioerror) => Some(ioerror),
+            &ParseError::Hyper(ref string, ref error) => Some(error),
+            &ParseError::Uri(ref string, ref error) => Some(error),
         }
     }
 }
@@ -72,20 +108,28 @@ impl fmt::Display for ParseError {
             &ParseError::IO(ref string, ref ioerror) => {
                 write!(f, "{}; Cause: {:?}", string, ioerror)
             }
+            &ParseError::Hyper(ref string, ref error) => {
+                write!(f, "{}; Cause: {:?}", string, error)
+            }
+            &ParseError::Uri(ref string, ref error) => write!(f, "{}; Cause: {:?}", string, error),
         }
     }
 }
 
 /// Keys has two implementations: for Option<T : Bencodable> or  T: Bencodable
 /// Meant to be able to handle those types generically when converting from Bencoded dict
-pub trait Keys {
-    fn keys<'a>(opt: Option<&'a BencodeT>) -> Result<Self, ParseError>;
-    fn to_value(self) -> Option<Self>;
+pub trait Keys<T: Bencodable> {
+    fn keys<'a>(opt: Option<&'a BencodeT>) -> Result<Self, ParseError>
+    where
+        Self: Sized;
+    fn to_value(self) -> Option<T>
+    where
+        T: Sized;
 }
 
-impl<T: Bencodable> Keys for Option<T> {
+impl<T: Bencodable> Keys<T> for Option<T> {
     fn keys<'a>(opt: Option<&'a BencodeT>) -> Result<Option<T>, ParseError> {
-        if opt.is_some {
+        if opt.is_some() {
             Ok(Some(T::from_BencodeT(opt.unwrap())?))
         } else {
             Ok(None)
@@ -96,7 +140,7 @@ impl<T: Bencodable> Keys for Option<T> {
     }
 }
 
-impl<T: Bencodable> Keys for T {
+impl<T: Bencodable> Keys<T> for T {
     fn keys<'a>(opt: Option<&'a BencodeT>) -> Result<Self, ParseError> {
         T::from_BencodeT(opt.unwrap())
     }
@@ -116,15 +160,24 @@ macro_rules! get_keys {
     }
 }
 
+macro_rules! get_keys_enum {
+    ($Enu:path, $hm:expr, $(($key:ident, $T:ident)),*) => {
+        $Enu(
+        $(
+            $T::keys($hm.get(stringify!($key)))?,
+        )*
+        )
+    }
+}
+
 /// Used to turn into bencoded objects
 macro_rules! to_keys {
     ($(($key:ident, $T:ident)),*) => {
         {
             let hm = HashMap::new();
             $(
-                match $key.to_value() {
-                    Some(v) => hm.insert(stringify!($key), v.to_BencodeT()),
-                    None => (),
+                if let Some(v) = $key.to_value() {
+                    hm.insert(stringify!($key).to_string(), v.to_BencodeT());
                 }
 
             )*
@@ -141,7 +194,7 @@ pub trait Bencodable: Clone {
 }
 
 macro_rules! parse_error {
-    ($ ( $ arg : tt ), *) => {
+    ($ ( $ arg : expr ), *) => {
         ParseError::new(
             format!($( $arg),*)
         )
@@ -174,19 +227,19 @@ impl Bencodable for String {
     }
 }
 
-impl Bencodable for [u8; 20] {
+impl Bencodable for hash {
     fn to_BencodeT(self) -> BencodeT {
         return unsafe { BencodeT::String(String::from_utf8_unchecked(self)) };
     }
-    fn from_BencodeT(bencode_t: &BencodeT) -> Result<[u8; 20], ParseError> {
+    fn from_BencodeT(bencode_t: &BencodeT) -> Result<hash, ParseError> {
         match bencode_t {
             &BencodeT::String(ref string) => {
-                let mut a: [u8; 20] = Default::default();
+                let mut a: hash = Default::default();
                 a.copy_from_slice(string.as_bytes());
                 Ok(a)
             }
             _ => Err(parse_error!(
-                "Attempted to convert non-string BencodeT to [u8;20]: {:?}",
+                "Attempted to convert non-string BencodeT to hash: {:?}",
                 bencode_t
             )),
         }
@@ -248,6 +301,28 @@ impl Bencodable for i64 {
     fn from_BencodeT(bencode_t: &BencodeT) -> Result<i64, ParseError> {
         match bencode_t {
             &BencodeT::Integer(ref i) => Ok(i.clone()),
+            _ => Err(ParseError::new_str(
+                "Attempted to convert non-integer BencodeT to integer",
+            )),
+        }
+    }
+}
+
+impl Bencodable for usize {
+    fn to_BencodeT(self) -> BencodeT {
+        BencodeT::Integer(self as i64)
+    }
+    fn from_BencodeT(bencode_t: &BencodeT) -> Result<usize, ParseError> {
+        match bencode_t {
+            &BencodeT::Integer(ref i) => {
+                if *i < 0 {
+                    Err(parse_error!(
+                        "Attempted to convert negative BencodeT::Integer to usize"
+                    ))
+                } else {
+                    Ok(i.clone() as usize)
+                }
+            }
             _ => Err(ParseError::new_str(
                 "Attempted to convert non-integer BencodeT to integer",
             )),
