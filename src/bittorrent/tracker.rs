@@ -177,6 +177,60 @@ impl Serializable for str {
     }
 }
 
+struct RequestStream {
+    urls : Vec<String>,
+    status : Vec<RequestStatus>,
+}
+
+enum RequestStatus {
+    None,
+    Downloading,
+    Complete,
+}
+
+impl RequestStream {
+    fn new(urls : Vec<String>) -> RequestStream {
+        let status = Vec::new();
+        urls.iter().for_each(|url| status.push(RequestStatus::None));
+        return RequestStream{
+            urls : urls,
+            status : status,
+        }
+    }
+}
+
+// Note: this changes a lot in futures 0.2
+// https://docs.rs/futures/*/futures/stream/trait.Stream.html
+impl Stream for RequestStream {
+    type Item = Vec<SocketAddr>;
+    type Error = ParseError;
+    fn poll(
+        &mut self
+    ) -> Poll<Option<Self::Item> {
+        // Check for completion
+        // Make requests
+        for (i, url) in self.urls.iter().enumerate() {
+            match self.status[i] {
+                RequestStatus::None => {
+                    // Execute the request
+                    let client = Client::new(self.core_handle);
+                    let uri = url.parse()?;
+                    let work = client.get(uri);
+                    self.core_handle.execute(work);
+                    self.status[i] = RequestStatus::Downloading;
+                }
+                RequestStatus::Downloading => {
+                    // Poll download. Change status if done, then yield
+                }
+                RequestStatus::Complete => {}
+            }
+        }
+        Ok(Async::Ready(None))
+    }
+}
+
+
+
 macro_rules! serialize {
     ($(($a : expr, $b : expr),)*) => {
         {
@@ -206,11 +260,16 @@ impl Tracker {
             ("numwant", ::MAX_PEERS),
         );
         let mut vec = Vec::new();
+        let stream = RequestStream::new(
+            urls.iter()
+                .map(|url| format!("{}?{}", url, query_string))
+                .collect()
+        );
+        /*
         urls.iter()
-        // Make this a stream?
             .map(|url| Tracker::make_request(format!("{}?{}", url, query_string)))
             .map(|res| res.and_then(|val| vec.append(&mut val)));
-        return Ok(vec);
+        return Ok(vec); */
     }
 
     #[async]
