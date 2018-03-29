@@ -6,6 +6,7 @@
 #![feature(iterator_try_fold)]
 #![feature(try_trait)]
 #![feature(proc_macro, conservative_impl_trait, generators)]
+#![allow(dead_code)]
 
 extern crate bit_vec;
 extern crate byteorder;

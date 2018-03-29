@@ -686,13 +686,13 @@ impl PeerManager {
 #[cfg(test)]
 mod tests {
     use bittorrent::PeerManager::*;
-
+    /*
     #[test]
     fn test_send_receive() {
         let mut manager = PeerManager::new();
         manager.add_torrent(::TEST_FILE.to_string(), ::DL_DIR.to_string());
         manager.handle("6000");
         manager.handle("6001");
-    }
+    }*/
 
 }

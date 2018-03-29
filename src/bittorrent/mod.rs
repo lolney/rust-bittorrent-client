@@ -193,6 +193,22 @@ macro_rules! to_keys {
     }
 }
 
+/// Like to_keys, but takes the elements of $struct
+macro_rules! to_keys_serialize {
+    ($struct:ident, $(($key:ident, $T:ident)),*) => {
+        {
+            let mut hm = HashMap::new();
+            $(
+                if let Some(v) = $struct.$key.clone().to_value() {
+                    hm.insert(mod_stringify!($key).to_string(), v.to_BencodeT());
+                }
+
+            )*
+            hm
+        }
+    }
+}
+
 pub trait Bencodable: Clone {
     fn to_BencodeT(self) -> BencodeT;
     fn from_BencodeT(bencode_t: &BencodeT) -> Result<Self, ParseError>

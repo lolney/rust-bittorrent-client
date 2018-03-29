@@ -25,7 +25,7 @@ pub struct Tracker {
     incomplete: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TrackerResponse {
     warning_message: Option<String>,
     interval: i64,
@@ -63,7 +63,7 @@ impl TrackerResponse {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TrackerPeer {
     Dictionary {
         peer_id: hash,
@@ -77,18 +77,40 @@ pub enum TrackerPeer {
 }
 
 impl TrackerPeer {
+    fn ip_from_u32(ip: u32) -> String {
+        let mut out = String::with_capacity(15);
+        let mut bytes: [u8; 4] = [0; 4];
+        BigEndian::write_u32(&mut bytes, ip);
+
+        for i in 0..4 {
+            out.push_str(&bytes[i].to_string());
+            if i != 3 {
+                out.push('.')
+            }
+        }
+        out
+    }
+
+    fn u32_from_ip(ip: &str) -> u32 {
+        let mut total: u32 = 0;
+        for (i, octet) in ip.split('.').enumerate() {
+            total += octet.parse::<u32>().unwrap() << ((3 - i) * 8)
+        }
+        total
+    }
+
     pub fn from_binary(bytes: &[u8]) -> Result<TrackerPeer, ParseError> {
         if bytes.len() < 6 {}
 
         Ok(TrackerPeer::Binary {
-            ip: BigEndian::read_u32(&bytes[0..4]).to_string(),
+            ip: TrackerPeer::ip_from_u32(BigEndian::read_u32(&bytes[0..4])),
             port: BigEndian::read_u16(&bytes[4..6]) as usize,
         })
     }
 
     pub fn to_binary(ip: &str, port: usize) -> [u8; 6] {
         let mut buf: [u8; 6] = [0; 6];
-        BigEndian::write_u32(&mut buf[0..4], ip.parse::<u32>().unwrap());
+        BigEndian::write_u32(&mut buf[0..4], TrackerPeer::u32_from_ip(ip));
         BigEndian::write_u16(&mut buf[4..6], port as u16);
         return buf;
     }
@@ -288,49 +310,88 @@ mod tests {
 
     use bittorrent::tracker::*;
     use bittorrent::bencoder::encode;
-    use bittorrent::Peer;
+    use bittorrent::Peer::Peer;
 
-    fn create_resp() -> BencodeT {
-        let warning_message = None;
-        let interval = 1;
-        let min_interval = None;
-        let tracker_id = "xyz";
-        let complete = 10;
-        let incomplete = 10;
-        let peers = make_trackerpeers(20);
+    #[inline]
+    fn place(i: usize, place: usize) -> bool {
+        i & (1 << place) != 0
+    }
 
-        let hm = to_keys!{
+    fn make_resps() -> Vec<TrackerResponse> {
+        (0..8)
+            .map(|i| TrackerResponse {
+                warning_message: if place(i, 0) {
+                    None
+                } else {
+                    Some("msg".to_string())
+                },
+                interval: 1,
+                min_interval: if place(i, 1) { None } else { Some(1) },
+                tracker_id: String::from("xyz"),
+                complete: 10,
+                incomplete: 10,
+                peers: make_trackerpeers(20, place(i, 2)),
+            })
+            .collect()
+    }
+
+    fn serialize_resp(resp: &TrackerResponse) -> BencodeT {
+        let hm = to_keys_serialize!{
+            resp,
             (warning_message, OptionString),
             (interval, i64),
             (min_interval, Optioni64),
             (tracker_id, String),
             (complete, i64),
             (incomplete, i64),
-            (peers, VecTrackerPeer),
+            (peers, VecTrackerPeer)
         };
         BencodeT::Dictionary(hm)
     }
 
     fn make_trackerpeers(n: usize, binary: bool) -> VecTrackerPeer {
-        let make = if binary {
-            |i| TrackerPeer::Binary {
+        let make: Box<Fn(usize) -> TrackerPeer> = if binary {
+            Box::new(|i| TrackerPeer::Binary {
                 ip: format!("127.0.0.{}", i),
                 port: i,
-            }
+            })
         } else {
-            |i| TrackerPeer::Dictionary {
+            Box::new(|i| TrackerPeer::Dictionary {
                 ip: format!("127.0.0.{}", i),
                 port: i,
-                id: Peer::gen_peer_id(),
-            }
+                peer_id: Peer::gen_peer_id(),
+            })
         };
-        0..n.map(|i| make(i)).collect()
+        (0..n).map(|i| make(i)).collect()
     }
 
+    #[test]
     fn test_tracker_resp() {
-        TrackerResponse::from_BencodeT(create_resp).unwrap();
+        for resp in make_resps() {
+            assert_eq!(
+                resp,
+                TrackerResponse::from_BencodeT(&serialize_resp(&resp)).unwrap()
+            );
+        }
     }
 
+    #[test]
+    fn test_u32_from_ip() {
+        type TP = TrackerPeer;
+        assert_eq!(
+            TP::u32_from_ip("255.255.255.255"),
+            ((1_u64 << 32) - 1) as u32
+        );
+        assert_eq!(TP::u32_from_ip("0.0.0.0"), 0);
+        assert_eq!(TP::ip_from_u32(256), "0.0.1.0");
+
+        for i in 0..(1 << 4) {
+            let i = i << 28;
+            assert_eq!(TP::u32_from_ip(&TP::ip_from_u32(i as u32)), i as u32);
+        }
+    }
+
+    /*
     fn test_tracker() {
         // Make request to tracker
         let stream = Tracker::get_peers();
@@ -344,5 +405,5 @@ mod tests {
         // Tracker returns bad response (not bencoded)
         // Can't convert to TrackerResponse
         stream.for_each(|vec| {});
-    }
+    }*/
 }
