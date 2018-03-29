@@ -287,5 +287,62 @@ impl Tracker {
 mod tests {
 
     use bittorrent::tracker::*;
+    use bittorrent::bencoder::encode;
+    use bittorrent::Peer;
 
+    fn create_resp() -> BencodeT {
+        let warning_message = None;
+        let interval = 1;
+        let min_interval = None;
+        let tracker_id = "xyz";
+        let complete = 10;
+        let incomplete = 10;
+        let peers = make_trackerpeers(20);
+
+        let hm = to_keys!{
+            (warning_message, OptionString),
+            (interval, i64),
+            (min_interval, Optioni64),
+            (tracker_id, String),
+            (complete, i64),
+            (incomplete, i64),
+            (peers, VecTrackerPeer),
+        };
+        BencodeT::Dictionary(hm)
+    }
+
+    fn make_trackerpeers(n: usize, binary: bool) -> VecTrackerPeer {
+        let make = if binary {
+            |i| TrackerPeer::Binary {
+                ip: format!("127.0.0.{}", i),
+                port: i,
+            }
+        } else {
+            |i| TrackerPeer::Dictionary {
+                ip: format!("127.0.0.{}", i),
+                port: i,
+                id: Peer::gen_peer_id(),
+            }
+        };
+        0..n.map(|i| make(i)).collect()
+    }
+
+    fn test_tracker_resp() {
+        TrackerResponse::from_BencodeT(create_resp).unwrap();
+    }
+
+    fn test_tracker() {
+        // Make request to tracker
+        let stream = Tracker::get_peers();
+        stream.for_each(|vec| {
+            // receive correct list of peers
+        });
+    }
+
+    fn test_tracker_err() {
+        // Tracker not available
+        // Tracker returns bad response (not bencoded)
+        // Can't convert to TrackerResponse
+        stream.for_each(|vec| {});
+    }
 }

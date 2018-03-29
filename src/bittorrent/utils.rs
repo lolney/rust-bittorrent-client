@@ -1,4 +1,5 @@
 use bittorrent::BencodeT;
+use rand::random;
 
 pub fn parse_i64(instring: String) -> Result<i64, String> {
     let mut string = instring;
@@ -65,4 +66,8 @@ pub fn create_ints() -> (Vec<&'static str>, Vec<BencodeT>) {
         BencodeT::Integer(-9223372036854775807),
     ];
     (strings, bints)
+}
+
+pub fn gen_random_bytes(n: usize) -> Vec<u8> {
+    (0..n).map(|_| random::<u8>()).collect()
 }

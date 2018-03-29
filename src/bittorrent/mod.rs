@@ -149,12 +149,19 @@ impl<T: Bencodable> Keys<T> for T {
     }
 }
 
+// convert _ to space
+macro_rules! mod_stringify {
+    ($key:ident) => {
+        &stringify!($key).replace('_'," ")
+    }
+}
+
 /// Used to construct a struct from entries in a BencodeT Hashmap
 macro_rules! get_keys {
     ($Struct:ident, $hm:expr, $(($key:ident, $T:ident)),*) => {
         $Struct{
         $(
-            $key: $T::keys($hm.get(stringify!($key)))?,
+            $key: $T::keys($hm.get(mod_stringify!($key)))?,
         )*
         }
     }
@@ -164,7 +171,7 @@ macro_rules! get_keys_enum {
     ($Enu:ident, $variant:ident, $hm:expr, $(($key:ident, $T:ident)),*) => {
         $Enu::$variant{
         $(
-            $key: $T::keys($hm.get(stringify!($key)))?,
+            $key: $T::keys($hm.get(mod_stringify!($key)))?,
         )*
         }
     }
@@ -177,7 +184,7 @@ macro_rules! to_keys {
             let mut hm = HashMap::new();
             $(
                 if let Some(v) = $key.to_value() {
-                    hm.insert(stringify!($key).to_string(), v.to_BencodeT());
+                    hm.insert(mod_stringify!($key).to_string(), v.to_BencodeT());
                 }
 
             )*

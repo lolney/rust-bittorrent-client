@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use bittorrent::BencodeT;
 
+/// Entry point for serializing (bencoding) BencodeT objects
 pub fn encode(bencobj: &BencodeT) -> String {
     match bencobj {
         &BencodeT::String(ref string) => encode_string(string.as_str()),
@@ -48,7 +49,7 @@ fn encode_list(vec: &Vec<BencodeT>) -> String {
 mod tests {
 
     use bittorrent::bencoder::*;
-    use std::collections::{HashMap};
+    use std::collections::HashMap;
     use bittorrent::BencodeT;
     use bittorrent::utils::{create_ints, create_strings};
 

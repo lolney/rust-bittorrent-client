@@ -376,10 +376,6 @@ impl Torrent {
     }
 }
 
-fn gen_random_bytes(n: usize) -> Vec<u8> {
-    (0..n).map(|_| random::<u8>()).collect()
-}
-
 macro_rules! piece {
     ($i : expr, $n : expr) => {
         Piece {
@@ -424,6 +420,7 @@ mod tests {
 
     use bittorrent::torrent::*;
     use bittorrent::{Piece, metainfo::BTFile};
+    use bittorrent::utils::gen_random_bytes;
     use std::path::PathBuf;
 
     #[test]
