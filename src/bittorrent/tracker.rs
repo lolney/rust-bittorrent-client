@@ -6,7 +6,8 @@ use bittorrent::Peer::{Peer, PeerInfo};
 use bittorrent::bedecoder::parse;
 use byteorder::{BigEndian, ByteOrder};
 use futures::{Future, Stream};
-use hyper::{Chunk, Client, Response};
+use hyper::{Chunk, Client, Response, Uri};
+use hyper::client::{FutureResponse, HttpConnector};
 use tokio_core::reactor::Core;
 use url::form_urlencoded;
 use std::collections::HashMap;
@@ -135,7 +136,8 @@ impl Bencodable for TrackerPeer {
         match bencode_t {
             &BencodeT::String(ref string) => Ok(TrackerPeer::from_binary(string.as_bytes())?),
             &BencodeT::Dictionary(ref hm) => Ok(get_keys_enum!(
-                TrackerPeer::Dictionary,
+                TrackerPeer,
+                Dictionary,
                 hm,
                 (peer_id, hash),
                 (ip, String),
@@ -178,8 +180,7 @@ impl Serializable for str {
 }
 
 struct RequestStream {
-    urls : Vec<String>,
-    status : Vec<RequestStatus>,
+    reqs: Vec<FutureResponse>,
 }
 
 enum RequestStatus {
@@ -189,13 +190,9 @@ enum RequestStatus {
 }
 
 impl RequestStream {
-    fn new(urls : Vec<String>) -> RequestStream {
-        let status = Vec::new();
-        urls.iter().for_each(|url| status.push(RequestStatus::None));
-        return RequestStream{
-            urls : urls,
-            status : status,
-        }
+    fn new(urls: Vec<Uri>, client: Client<HttpConnector>) -> RequestStream {
+        let reqs = urls.iter().map(|url| client.get(url.clone())).collect();
+        return RequestStream { reqs: reqs };
     }
 }
 
@@ -204,32 +201,38 @@ impl RequestStream {
 impl Stream for RequestStream {
     type Item = Vec<SocketAddr>;
     type Error = ParseError;
-    fn poll(
-        &mut self
-    ) -> Poll<Option<Self::Item> {
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         // Check for completion
         // Make requests
-        for (i, url) in self.urls.iter().enumerate() {
-            match self.status[i] {
-                RequestStatus::None => {
-                    // Execute the request
-                    let client = Client::new(self.core_handle);
-                    let uri = url.parse()?;
-                    let work = client.get(uri);
-                    self.core_handle.execute(work);
-                    self.status[i] = RequestStatus::Downloading;
+        if self.reqs.len() == 0 {
+            return Ok(Async::Ready(None));
+        }
+        let mut res = None;
+        let mut index = 0;
+        for (i, req) in self.reqs.iter().enumerate() {
+            match req.poll() {
+                Ok(Async::Ready(Ok(v))) => {
+                    let ips = Tracker::get_ips(v);
+                    res = Some(Async::Ready(ips));
+                    index = i;
+                    break;
                 }
-                RequestStatus::Downloading => {
-                    // Poll download. Change status if done, then yield
+                Ok(Async::Ready(Err(e))) => {
+                    return Err(e);
                 }
-                RequestStatus::Complete => {}
+                Ok(Async::NotReady) => {}
+                Err(e) => {
+                    return Err(ParseError::new_str("canceled"));
+                }
             }
         }
-        Ok(Async::Ready(None))
+        if res.is_some() {
+            self.reqs.remove(index);
+            return Ok(Async::Ready(res.unwrap()));
+        }
+        return Ok(Async::Ready(None));
     }
 }
-
-
 
 macro_rules! serialize {
     ($(($a : expr, $b : expr),)*) => {
@@ -247,7 +250,7 @@ impl Tracker {
         info_hash: hash,
         peer_id: hash,
         urls: Vec<String>,
-    ) -> Result<Vec<SocketAddr>, ParseError> {
+    ) -> Result<RequestStream, ParseError> {
         let query_string = serialize!(
             ("info_hash", info_hash),
             ("peer_id", peer_id),
@@ -259,17 +262,27 @@ impl Tracker {
             ("event", "started"),
             ("numwant", ::MAX_PEERS),
         );
-        let mut vec = Vec::new();
-        let stream = RequestStream::new(
-            urls.iter()
-                .map(|url| format!("{}?{}", url, query_string))
-                .collect()
-        );
+        let uris = Vec::new();
+        for url in urls {
+            let uri: Uri = format!("{}?{}", url, query_string).parse()?;
+            uris.push(uri);
+        }
+        let mut core = Core::new()?;
+        let client = Client::new(&core.handle());
+        let stream = RequestStream::new(uris, client);
+        return Ok(stream);
         /*
         urls.iter()
             .map(|url| Tracker::make_request(format!("{}?{}", url, query_string)))
             .map(|res| res.and_then(|val| vec.append(&mut val)));
         return Ok(vec); */
+
+        /*
+        let client = Client::new(self.core_handle);
+        let uri = url.parse()?;
+        let work = client.get(uri);
+        self.core_handle.execute(work);
+        self.status[i] = RequestStatus::Downloading;*/
     }
 
     #[async]
@@ -300,6 +313,11 @@ impl Tracker {
         let bencodet = parse(body)?;
         let response = TrackerResponse::from_BencodeT(&bencodet)?;
         return Ok(response.peers);
+    }
+
+    fn get_ips(chunk: Chunk) -> Result<Vec<SocketAddr>, ParseError> {
+        let peers = Tracker::parse_response(&chunk)?;
+        return Ok(peers.iter().map(|info| info.ip()).collect());
     }
 
     pub fn announce() {}

@@ -161,12 +161,12 @@ macro_rules! get_keys {
 }
 
 macro_rules! get_keys_enum {
-    ($Enu:path, $hm:expr, $(($key:ident, $T:ident)),*) => {
-        $Enu(
+    ($Enu:ident, $variant:ident, $hm:expr, $(($key:ident, $T:ident)),*) => {
+        $Enu::$variant{
         $(
-            $T::keys($hm.get(stringify!($key)))?,
+            $key: $T::keys($hm.get(stringify!($key)))?,
         )*
-        )
+        }
     }
 }
 
@@ -229,7 +229,7 @@ impl Bencodable for String {
 
 impl Bencodable for hash {
     fn to_BencodeT(self) -> BencodeT {
-        return unsafe { BencodeT::String(String::from_utf8_unchecked(self)) };
+        return unsafe { BencodeT::String(String::from_utf8_unchecked(self.to_vec())) };
     }
     fn from_BencodeT(bencode_t: &BencodeT) -> Result<hash, ParseError> {
         match bencode_t {

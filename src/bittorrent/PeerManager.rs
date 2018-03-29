@@ -20,6 +20,8 @@ use std::usize::MAX;
 use log::error;
 use std::io::Error as IOError;
 
+use futures::prelude::{async, Future, Sink, Stream};
+
 pub struct PeerManager {
     /*
     This should be a download rate-based PriorityQueue
@@ -294,6 +296,7 @@ impl PeerManager {
         }
     }
 
+    #[async]
     pub fn add_torrent(
         &mut self,
         metainfo_path: String,
@@ -301,9 +304,10 @@ impl PeerManager {
     ) -> Result<(), ParseError> {
         match Torrent::new(metainfo_path, download_path) {
             Ok(torrent) => {
-                let ips =
+                let stream =
                     Tracker::get_peers(torrent.info_hash(), self.peer_id, torrent.trackers())?;
-                for ip in ips {
+                #[async]
+                for ips in stream {
                     let channel = self.manager_send
                         .ok_or(parse_error!(
                             "Error while sffing torrent: Downloading event loop not yet started"
@@ -311,7 +315,9 @@ impl PeerManager {
                         .clone();
                     let torrents = self.torrents.clone();
                     let npeers = self.npeers.clone();
-                    PeerManager::connect(TcpStream::connect(ip), torrents, npeers, channel)
+                    for ip in ips {
+                        PeerManager::connect(TcpStream::connect(ip), torrents, npeers, channel);
+                    }
                 }
                 {
                     let mut torrents = self.torrents.lock().unwrap();
