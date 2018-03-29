@@ -112,7 +112,7 @@ fn hash(bytes: &[u8]) -> hash {
 
 /// In to_BencodeT: inserts a vector into the hm, converting elems to BencodeT
 fn insert_vector<T: Bencodable>(hm: &mut HashMap<String, BencodeT>, string: String, vec: &Vec<T>) {
-    hm.insert(String::from(string), vec.to_BencodeT());
+    hm.insert(String::from(string), vec.clone().to_BencodeT());
 }
 
 /// In from_BencodeT: inserts a vector into the hm, converting elems to BencodeT
@@ -329,9 +329,9 @@ impl MetaInfo {
 
     pub fn trackers(&self) -> Vec<String> {
         if self.announce_list.is_some() {
-            return self.announce_list.unwrap().clone();
+            return self.announce_list.clone().unwrap();
         } else if self.announce.is_some() {
-            return vec![self.announce.unwrap()];
+            return vec![self.announce.clone().unwrap()];
         }
         panic!("Metainfo contains neither announce nor anounce-list");
     }

@@ -174,7 +174,7 @@ macro_rules! get_keys_enum {
 macro_rules! to_keys {
     ($(($key:ident, $T:ident)),*) => {
         {
-            let hm = HashMap::new();
+            let mut hm = HashMap::new();
             $(
                 if let Some(v) = $key.to_value() {
                     hm.insert(stringify!($key).to_string(), v.to_BencodeT());
@@ -276,12 +276,12 @@ impl Bencodable for Vec<BencodeT> {
 
 impl<T: Bencodable> Bencodable for Vec<T> {
     fn to_BencodeT(self) -> BencodeT {
-        BencodeT::List(self.iter().map(|x| x.to_BencodeT()).collect())
+        BencodeT::List(self.into_iter().map(|x| x.to_BencodeT()).collect())
     }
     fn from_BencodeT(bencode_t: &BencodeT) -> Result<Vec<T>, ParseError> {
         match bencode_t {
             &BencodeT::List(ref list) => {
-                let vec = Vec::new();
+                let mut vec = Vec::new();
                 for elem in list {
                     vec.push(T::from_BencodeT(elem)?);
                 }

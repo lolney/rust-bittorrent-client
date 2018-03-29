@@ -100,7 +100,7 @@ impl TrackerPeer {
             }
             &TrackerPeer::Dictionary {
                 ref peer_id,
-                ip,
+                ref ip,
                 port,
             } => SocketAddr::new(ip.parse().unwrap(), port as u16),
         };
@@ -118,11 +118,7 @@ impl Bencodable for TrackerPeer {
                 let bytes = TrackerPeer::to_binary(ip, port);
                 return unsafe { BencodeT::String(String::from_utf8_unchecked(bytes.to_vec())) };
             }
-            TrackerPeer::Dictionary {
-                ref peer_id,
-                ip,
-                port,
-            } => {
+            TrackerPeer::Dictionary { peer_id, ip, port } => {
                 let hm = to_keys!{
                     (peer_id, hash),
                     (ip, String),
@@ -179,14 +175,8 @@ impl Serializable for str {
     }
 }
 
-struct RequestStream {
+pub struct RequestStream {
     reqs: Vec<FutureResponse>,
-}
-
-enum RequestStatus {
-    None,
-    Downloading,
-    Complete,
 }
 
 impl RequestStream {
@@ -209,17 +199,20 @@ impl Stream for RequestStream {
         }
         let mut res = None;
         let mut index = 0;
-        for (i, req) in self.reqs.iter().enumerate() {
+        for (i, req) in self.reqs.iter_mut().enumerate() {
             match req.poll() {
-                Ok(Async::Ready(Ok(v))) => {
-                    let ips = Tracker::get_ips(v);
-                    res = Some(Async::Ready(ips));
-                    index = i;
-                    break;
-                }
-                Ok(Async::Ready(Err(e))) => {
-                    return Err(e);
-                }
+                Ok(Async::Ready(v)) => match v.body().concat2().poll() {
+                    Ok(Async::Ready(v)) => {
+                        let ips = Tracker::get_ips(v)?;
+                        res = Some(Async::Ready(Some(ips)));
+                        index = i;
+                        break;
+                    }
+                    Ok(Async::NotReady) => {}
+                    Err(e) => {
+                        return Err(ParseError::new_str("canceled"));
+                    }
+                },
                 Ok(Async::NotReady) => {}
                 Err(e) => {
                     return Err(ParseError::new_str("canceled"));
@@ -228,7 +221,7 @@ impl Stream for RequestStream {
         }
         if res.is_some() {
             self.reqs.remove(index);
-            return Ok(Async::Ready(res.unwrap()));
+            return Ok(res.unwrap());
         }
         return Ok(Async::Ready(None));
     }
@@ -262,51 +255,15 @@ impl Tracker {
             ("event", "started"),
             ("numwant", ::MAX_PEERS),
         );
-        let uris = Vec::new();
+        let mut uris = Vec::new();
         for url in urls {
             let uri: Uri = format!("{}?{}", url, query_string).parse()?;
             uris.push(uri);
         }
-        let mut core = Core::new()?;
+        let core = Core::new()?;
         let client = Client::new(&core.handle());
         let stream = RequestStream::new(uris, client);
         return Ok(stream);
-        /*
-        urls.iter()
-            .map(|url| Tracker::make_request(format!("{}?{}", url, query_string)))
-            .map(|res| res.and_then(|val| vec.append(&mut val)));
-        return Ok(vec); */
-
-        /*
-        let client = Client::new(self.core_handle);
-        let uri = url.parse()?;
-        let work = client.get(uri);
-        self.core_handle.execute(work);
-        self.status[i] = RequestStatus::Downloading;*/
-    }
-
-    #[async]
-    pub fn make_request<F>(url: String) -> Result<Vec<SocketAddr>, ParseError>
-    where
-        F: Fn(SocketAddr),
-    {
-        let mut core = Core::new()?;
-        let client = Client::new(&core.handle());
-
-        let uri = url.parse()?;
-        let work = client.get(uri).map(|res| {
-            if !res.status().is_success() {
-                return Err(parse_error!(
-                    "Failed to get response from tracker: {}",
-                    res.status()
-                ));
-            }
-            // Error prop: https://github.com/rust-lang-nursery/futures-rs/issues/402
-            Ok(res.body().concat2())
-        });
-        let body: Chunk = await!(await!(work)??)?;
-        let peers = Tracker::parse_response(&body).unwrap();
-        return Ok(peers.iter().map(|info| info.ip()).collect());
     }
 
     fn parse_response(body: &[u8]) -> Result<Vec<TrackerPeer>, ParseError> {

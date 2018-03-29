@@ -132,7 +132,7 @@ enum ManagerUpdate {
     None,
 }
 
-struct NewPeerMsg {
+pub struct NewPeerMsg {
     peer_id: hash,
     info_hash: hash,
     comm: ManagerComm,
@@ -296,7 +296,6 @@ impl PeerManager {
         }
     }
 
-    #[async]
     pub fn add_torrent(
         &mut self,
         metainfo_path: String,
@@ -306,19 +305,19 @@ impl PeerManager {
             Ok(torrent) => {
                 let stream =
                     Tracker::get_peers(torrent.info_hash(), self.peer_id, torrent.trackers())?;
-                #[async]
-                for ips in stream {
-                    let channel = self.manager_send
-                        .ok_or(parse_error!(
-                            "Error while sffing torrent: Downloading event loop not yet started"
-                        ))?
-                        .clone();
-                    let torrents = self.torrents.clone();
-                    let npeers = self.npeers.clone();
+
+                let torrents = self.torrents.clone();
+                let npeers = self.npeers.clone();
+                let channel = self.manager_send.clone().unwrap();
+                stream.for_each(|ips| {
                     for ip in ips {
+                        let channel = channel.clone();
+                        let torrents = torrents.clone();
+                        let npeers = npeers.clone();
                         PeerManager::connect(TcpStream::connect(ip), torrents, npeers, channel);
                     }
-                }
+                    Ok(())
+                });
                 {
                     let mut torrents = self.torrents.lock().unwrap();
                     let info_hash = torrent.info_hash();
@@ -653,8 +652,9 @@ impl PeerManager {
         let torrents = self.torrents.clone();
 
         let (manager_send, manager_recv) = mpsc::channel();
+        self.manager_send = Some(manager_send.clone());
 
-        let mut npeers = self.npeers.clone();
+        let npeers = self.npeers.clone();
 
         thread::spawn(move || {
             // listens for incoming connections
@@ -671,12 +671,12 @@ impl PeerManager {
                 /*let (p,c) = unsafe { 
                         bounded_fast::new(10);
                     };*/
-                PeerManager::connect(stream, torrents, npeers, manager_send.clone());
+                PeerManager::connect(stream, torrents, npeers.clone(), manager_send.clone());
             });
         });
 
-        self.manager_send = Some(manager_send);
         let torrents = self.torrents.clone();
+        let npeers = self.npeers.clone();
         thread::spawn(move || {
             PeerManager::manage_choking(manager_recv, torrents, npeers);
         });
