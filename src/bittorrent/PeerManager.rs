@@ -134,12 +134,12 @@ enum ManagerUpdate {
 }
 
 enum Info {
-    Complete{info_hash: hash},
-    NPeers{info_hash: hash, n: usize},
-    Download{info_hash: hash, n: usize},
-    Upload{info_hash: hash, n: usize},
-    Downloaded{info_hash: hash, n: usize},
-    Uploaded{info_hash: hash, n: usize},
+    Complete { info_hash: hash },
+    NPeers { info_hash: hash, n: usize },
+    Download { info_hash: hash, n: usize },
+    Upload { info_hash: hash, n: usize },
+    Downloaded { info_hash: hash, n: usize },
+    Uploaded { info_hash: hash, n: usize },
 }
 
 pub struct NewPeerMsg {
@@ -320,7 +320,7 @@ impl PeerManager {
         download_path: String,
     ) -> Result<(), ParseError> {
         match Torrent::new(metainfo_path, download_path) {
-            Ok(torrent) => self._add_torrent(torrent)
+            Ok(torrent) => self._add_torrent(torrent),
             Err(err) => Err(err),
         }
     }
@@ -716,7 +716,7 @@ impl PeerManager {
 mod tests {
     use bittorrent::PeerManager::*;
 
-    fn create_controller(port: &str) -> mpsc::Receiver<Info>{
+    fn create_controller(port: &str) -> mpsc::Receiver<Info> {
         let mut manager = PeerManager::new();
         let receiver = manager.handle(port);
         manager.add_torrent(::TEST_FILE.to_string(), ::DL_DIR.to_string());
@@ -733,7 +733,7 @@ mod tests {
         loop {
             match leecher.recv() {
                 Info::Complete => return, // TODO: send stop signal
-                _ => ()
+                _ => (),
             }
         }
     }

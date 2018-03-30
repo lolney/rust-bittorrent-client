@@ -11,6 +11,7 @@ use std::cmp;
 use std::path::PathBuf;
 use priority_queue::PriorityQueue;
 use std::time::{Duration, Instant};
+use std::iter::FromIterator;
 
 /* Need to:
 - Maintain file access to downloading/uploading data; 
@@ -30,7 +31,7 @@ pub struct Torrent {
     map: HashMap<u32, Vec<DLMarker>>, // Piece indices -> indices indicated downloaded parts
     files: Vec<BTFile>,
     pub nrequests: usize,
-    piece_queue: PriorityQueue<Piece, usize>, // to be determined by rarity
+    piece_queue: PriorityQueue<usize, usize>, // index -> rarity
     outstanding_requests: VecDeque<Request>,
 }
 
@@ -74,7 +75,7 @@ impl Torrent {
                     map: HashMap::new(),
                     files: files,
                     nrequests: 0,
-                    piece_queue: PriorityQueue::new(), // TODO: init
+                    piece_queue: Torrent::init_queue(npieces),
                     outstanding_requests: VecDeque::new(),
                 })
             }
@@ -83,6 +84,11 @@ impl Torrent {
                 e,
             )),
         }
+    }
+
+    #[inline]
+    fn init_queue(npieces: usize) -> PriorityQueue<usize, usize> {
+        PriorityQueue::from_iter((0..npieces).map(|i| (i, 0)))
     }
 
     pub fn trackers(&self) -> Vec<String> {
@@ -103,6 +109,10 @@ impl Torrent {
             .retain(|req| req.piece != piece_data.piece);
     }
 
+    fn default_piece(&self, index: usize) -> Piece {
+        Piece::new(index as u32, 0, self.metainfo.info().piece_length as u32)
+    }
+
     /// select the next piece to be requested
     pub fn select_piece(&mut self) -> Option<Piece> {
         let timeout = Duration::from_secs(::READ_TIMEOUT);
@@ -118,7 +128,8 @@ impl Torrent {
         }
         // Take from the piece queue otherwise
         match self.piece_queue.pop() {
-            Some((piece, _)) => {
+            Some((index, _)) => {
+                let piece = self.default_piece(index);
                 self.outstanding_requests.push_back(Request {
                     piece: piece.clone(),
                     time: Instant::now(),
@@ -129,9 +140,8 @@ impl Torrent {
         }
     }
 
-    // TODO: convert to piece on return; keep track of only index?
-    pub fn update_priority(&self, piece: &Piece, d_npeers: usize) {
-        self.piece_queue.change_priority_by(piece, |n| n + d_npeers);
+    pub fn update_priority(&mut self, piece: &usize, d_npeers: usize) {
+        self.piece_queue.change_priority_by(piece, |n| n - d_npeers);
     }
 
     /// For each of the files specified in the torrent file, create it and parent directories
