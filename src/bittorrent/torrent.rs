@@ -74,7 +74,7 @@ impl Torrent {
                     map: HashMap::new(),
                     files: files,
                     nrequests: 0,
-                    piece_queue: PriorityQueue::new(),
+                    piece_queue: PriorityQueue::new(), // TODO: init
                     outstanding_requests: VecDeque::new(),
                 })
             }
@@ -116,7 +116,7 @@ impl Torrent {
                 self.outstanding_requests.push_front(front)
             }
         }
-        // Take front the piece queue otherwise
+        // Take from the piece queue otherwise
         match self.piece_queue.pop() {
             Some((piece, _)) => {
                 self.outstanding_requests.push_back(Request {
@@ -127,6 +127,11 @@ impl Torrent {
             }
             None => None,
         }
+    }
+
+    // TODO: convert to piece on return; keep track of only index?
+    pub fn update_priority(&self, piece: &Piece, d_npeers: usize) {
+        self.piece_queue.change_priority_by(piece, |n| n + d_npeers);
     }
 
     /// For each of the files specified in the torrent file, create it and parent directories

@@ -133,6 +133,15 @@ enum ManagerUpdate {
     None,
 }
 
+enum Info {
+    Complete{info_hash: hash},
+    NPeers{info_hash: hash, n: usize},
+    Download{info_hash: hash, n: usize},
+    Upload{info_hash: hash, n: usize},
+    Downloaded{info_hash: hash, n: usize},
+    Uploaded{info_hash: hash, n: usize},
+}
+
 pub struct NewPeerMsg {
     peer_id: hash,
     info_hash: hash,
@@ -297,59 +306,55 @@ impl PeerManager {
         }
     }
 
+    /// Resume torrent from file
+    pub fn resume_torrent(&mut self) {
+        // deserialize
+        // _add_torrent(torrent)
+        unimplemented!();
+    }
+
+    /// Add a new torrent from file `metainfo_path`, downloading
     pub fn add_torrent(
         &mut self,
         metainfo_path: String,
         download_path: String,
     ) -> Result<(), ParseError> {
         match Torrent::new(metainfo_path, download_path) {
-            Ok(torrent) => {
-                let mut core = Core::new()?;
-                let stream = Tracker::get_peers(
-                    core.handle(),
-                    torrent.info_hash(),
-                    self.peer_id,
-                    torrent.trackers(),
-                )?;
-
-                let torrents = self.torrents.clone();
-                let npeers = self.npeers.clone();
-                let channel = self.manager_send
-                    .clone()
-                    .expect("Handle not called before adding torrent");
-                core.run(stream.for_each(|ips| {
-                    for ip in ips {
-                        let channel = channel.clone();
-                        let torrents = torrents.clone();
-                        let npeers = npeers.clone();
-                        PeerManager::connect(TcpStream::connect(ip), torrents, npeers, channel);
-                    }
-                    Ok(())
-                }));
-                {
-                    let mut torrents = self.torrents.lock().expect("Torrents mutex poisoned");
-                    let info_hash = torrent.info_hash();
-                    torrents.insert(info_hash, torrent);
-                }
-                Ok(())
-            }
+            Ok(torrent) => self._add_torrent(torrent)
             Err(err) => Err(err),
         }
     }
-    /*
-    pub fn bootstrap_connection<F>(&mut self) -> Result<F, ParseError>
-    where
-        F: Fn(SocketAddr),
-    {
-        let channel = self.manager_send
-            .ok_or(parse_error!(
-                "Error while sffing torrent: Downloading event loop not yet started"
-            ))?
-            .clone();
+
+    fn _add_torrent(&mut self, torrent: Torrent) -> Result<(), ParseError> {
+        let mut core = Core::new()?;
+        let stream = Tracker::get_peers(
+            core.handle(),
+            torrent.info_hash(),
+            self.peer_id,
+            torrent.trackers(),
+        )?;
+
         let torrents = self.torrents.clone();
         let npeers = self.npeers.clone();
-        Ok(|sock| PeerManager::connect(TcpStream::connect(sock), torrents, npeers, channel))
-    }*/
+        let channel = self.manager_send
+            .clone()
+            .expect("Handle not called before adding torrent");
+        core.run(stream.for_each(|ips| {
+            for ip in ips {
+                let channel = channel.clone();
+                let torrents = torrents.clone();
+                let npeers = npeers.clone();
+                PeerManager::connect(TcpStream::connect(ip), torrents, npeers, channel);
+            }
+            Ok(())
+        }));
+        {
+            let mut torrents = self.torrents.lock().expect("Torrents mutex poisoned");
+            let info_hash = torrent.info_hash();
+            torrents.insert(info_hash, torrent);
+        }
+        Ok(())
+    }
 
     /// Handle incoming clients
     fn handle_client(
@@ -511,16 +516,9 @@ impl PeerManager {
         }
     }
 
-    /*
-    Choke: stop sending to this peer
-    Choking algo (according to Bittorrent spec):
-    - Check every 10 seconds
-    - Unchoke 4 peers for which we have the best download rates (who are interested)
-    - Peer with better download rate becomes interest: choke worst uploader
-    - Maintain one Peer, regardless of download rate
-    */
     // TODO: This is a strong candidate to be replaced by a task system
-    fn manage_choking(
+    // Task: returns Option<Update>
+    fn run_loop(
         recv: mpsc::Receiver<NewPeerMsg>,
         torrents: Arc<Mutex<HashMap<hash, Torrent>>>,
         npeers: Arc<AtomicUsize>,
@@ -568,7 +566,14 @@ impl PeerManager {
                 disconnected
             });
 
-            // Keep best uploaders unchoked
+            /*
+            Choke: stop sending to this peer
+            Choking algo (according to Bittorrent spec):
+            - Check every 10 seconds
+            - Unchoke 4 peers for which we have the best download rates (who are interested)
+            - Peer with better download rate becomes interest: choke worst uploader
+            - Maintain one Peer, regardless of download rate
+            */
             if start.elapsed() >= ten_secs {
                 let mut i = 0;
                 for (id, priority) in peer_priority.clone().into_sorted_iter() {
@@ -615,7 +620,7 @@ impl PeerManager {
         }
     }
 
-    pub fn connect(
+    fn connect(
         stream: Result<TcpStream, IOError>,
         torrents: Arc<Mutex<HashMap<hash, Torrent>>>,
         npeers: Arc<AtomicUsize>,
@@ -666,7 +671,9 @@ impl PeerManager {
         }
     }
 
-    pub fn handle(&mut self, port: &'static str) {
+    /// Entry point. Only meant to be called once.
+    /// Returns channel for receiving progress updates.
+    pub fn handle(&mut self, port: &'static str) -> mpsc::Receiver<Info> {
         // "127.0.0.1:80"
         let torrents = self.torrents.clone();
 
@@ -696,9 +703,12 @@ impl PeerManager {
 
         let torrents = self.torrents.clone();
         let npeers = self.npeers.clone();
+        let (info_send, info_recv) = mpsc::channel();
         thread::spawn(move || {
-            PeerManager::manage_choking(manager_recv, torrents, npeers);
+            PeerManager::run_loop(manager_recv, torrents, npeers);
         });
+
+        return info_recv;
     }
 }
 
@@ -706,11 +716,29 @@ impl PeerManager {
 mod tests {
     use bittorrent::PeerManager::*;
 
+    fn create_controller(port: &str) -> mpsc::Receiver<Info>{
+        let mut manager = PeerManager::new();
+        let receiver = manager.handle(port);
+        manager.add_torrent(::TEST_FILE.to_string(), ::DL_DIR.to_string());
+        return receiver;
+    }
+
     #[test]
     fn test_send_receive() {
-        let mut manager = PeerManager::new();
-        manager.handle("3333");
-        manager.add_torrent(::TEST_FILE.to_string(), ::DL_DIR.to_string());
+        // TODO: run tracker
+
+        let seeder = create_controller("1776");
+        let leecher = create_controller("1777");
+
+        loop {
+            match leecher.recv() {
+                Info::Complete => return, // TODO: send stop signal
+                _ => ()
+            }
+        }
     }
+
+    // Tests for worker and manager?
+    // Use channels to mock updates
 
 }

@@ -8,7 +8,6 @@ fn main() {
 
     siv.add_global_callback('q', |s| s.quit());
 
-    // Creates a dialog with a single "Quit" button
     siv.add_layer(
         Dialog::around(TextView::new("Hello Dialog!"))
             .title("Cursive")

@@ -7,7 +7,7 @@ use std::io::Error as IOError;
 use hyper::error::Error as HyperError;
 use hyper::error::UriError;
 
-/* Describes a decoded benencodable object */
+/// Describes a decoded benencodable object
 #[derive(PartialEq, Debug, Clone)]
 pub enum BencodeT {
     String(String),
