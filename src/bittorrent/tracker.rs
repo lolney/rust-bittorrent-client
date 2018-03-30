@@ -5,10 +5,11 @@ use std::net::SocketAddr;
 use bittorrent::Peer::{Peer, PeerInfo};
 use bittorrent::bedecoder::parse;
 use byteorder::{BigEndian, ByteOrder};
-use futures::{Future, Stream};
-use hyper::{Chunk, Client, Response, Uri};
+use futures::{Async, Future, Stream};
+use futures::stream::Concat2;
+use hyper::{Body, Chunk, Client, Response, Uri};
 use hyper::client::{FutureResponse, HttpConnector};
-use tokio_core::reactor::Core;
+use tokio_core::reactor::{Core, Handle};
 use url::form_urlencoded;
 use std::collections::HashMap;
 use hyper::error::Error as HyperError;
@@ -221,23 +222,35 @@ impl Stream for RequestStream {
         }
         let mut res = None;
         let mut index = 0;
-        for (i, req) in self.reqs.iter_mut().enumerate() {
+        'outer: for (i, req) in self.reqs.iter_mut().enumerate() {
             match req.poll() {
-                Ok(Async::Ready(v)) => match v.body().concat2().poll() {
-                    Ok(Async::Ready(v)) => {
-                        let ips = Tracker::get_ips(v)?;
-                        res = Some(Async::Ready(Some(ips)));
-                        index = i;
-                        break;
+                Ok(Async::Ready(v)) => {
+                    let mut chunk = v.body();
+                    // Is there a case where we have to wait here?
+                    loop {
+                        match chunk.poll() {
+                            Ok(Async::Ready(v)) => {
+                                let ips = Tracker::get_ips(v.unwrap())?;
+                                res = Some(Async::Ready(Some(ips)));
+                                index = i;
+                                break 'outer;
+                            }
+                            Ok(Async::NotReady) => {}
+                            Err(e) => {
+                                return Err(ParseError::new_hyper(
+                                    "Error while polling tracker response",
+                                    e,
+                                ));
+                            }
+                        }
                     }
-                    Ok(Async::NotReady) => {}
-                    Err(e) => {
-                        return Err(ParseError::new_str("canceled"));
-                    }
-                },
+                }
                 Ok(Async::NotReady) => {}
                 Err(e) => {
-                    return Err(ParseError::new_str("canceled"));
+                    return Err(ParseError::new_hyper(
+                        "Error while waiting for tracker response",
+                        e,
+                    ));
                 }
             }
         }
@@ -245,7 +258,7 @@ impl Stream for RequestStream {
             self.reqs.remove(index);
             return Ok(res.unwrap());
         }
-        return Ok(Async::Ready(None));
+        return Ok(Async::NotReady);
     }
 }
 
@@ -262,6 +275,7 @@ impl Tracker {
     pub fn new(url: String) {}
 
     pub fn get_peers(
+        handle: Handle,
         info_hash: hash,
         peer_id: hash,
         urls: Vec<String>,
@@ -282,8 +296,7 @@ impl Tracker {
             let uri: Uri = format!("{}?{}", url, query_string).parse()?;
             uris.push(uri);
         }
-        let core = Core::new()?;
-        let client = Client::new(&core.handle());
+        let client = Client::new(&handle);
         let stream = RequestStream::new(uris, client);
         return Ok(stream);
     }
@@ -311,6 +324,15 @@ mod tests {
     use bittorrent::tracker::*;
     use bittorrent::bencoder::encode;
     use bittorrent::Peer::Peer;
+
+    use futures::future::{ok, Future};
+    use tokio_core::reactor::{Core, Handle};
+    use std::time::Duration;
+    use std::thread;
+
+    use hyper::Error;
+    use hyper::header::ContentLength;
+    use hyper::server::{Http, Request, Response, Service};
 
     #[inline]
     fn place(i: usize, place: usize) -> bool {
@@ -391,15 +413,74 @@ mod tests {
         }
     }
 
-    /*
-    fn test_tracker() {
-        // Make request to tracker
-        let stream = Tracker::get_peers();
-        stream.for_each(|vec| {
-            // receive correct list of peers
-        });
+    #[derive(Debug, Clone)]
+    struct SimpleServer {
+        resp: String,
     }
 
+    impl SimpleServer {
+        fn new() -> SimpleServer {
+            let responses = make_resps();
+            SimpleServer {
+                resp: encode(&serialize_resp(&responses[0])),
+            }
+        }
+    }
+
+    impl Service for SimpleServer {
+        type Request = Request;
+        type Response = Response;
+        type Error = Error;
+        type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
+
+        fn call(&self, _req: Request) -> Self::Future {
+            Box::new(ok(Response::new()
+                .with_header(ContentLength(self.resp.len() as u64))
+                .with_body(self.resp.clone())))
+        }
+    }
+
+    #[test]
+    fn test_tracker() {
+        // Make request to tracker
+        let peer_id = Peer::gen_peer_id();
+        let info_hash = Peer::gen_peer_id();
+        let urls: Vec<String> = vec!["127.0.0.1:3000"]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect();
+        let responses = make_resps();
+
+        let resp = &responses[0];
+
+        let mut core = Core::new().unwrap();
+
+        // Setup server
+        let addr = urls[0].parse().unwrap();
+        thread::spawn(move || {
+            let mut server = Http::new().bind(&addr, || Ok(SimpleServer::new())).unwrap();
+            server.run();
+        });
+
+        let stream = Tracker::get_peers(
+            core.handle(),
+            info_hash,
+            peer_id,
+            urls.into_iter()
+                .map(|url| format!("http://{}", url))
+                .collect(),
+        ).unwrap();
+
+        let future = stream.for_each(|vec| {
+            let ips: Vec<SocketAddr> = resp.peers.iter().map(|peer| peer.ip()).collect();
+            assert_eq!(vec, ips);
+            Ok(())
+        });
+
+        core.run(future);
+    }
+    /*
+    TODO
     fn test_tracker_err() {
         // Tracker not available
         // Tracker returns bad response (not bencoded)

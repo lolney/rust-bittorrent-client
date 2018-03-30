@@ -19,6 +19,7 @@ use bit_vec::BitVec;
 use std::usize::MAX;
 use log::error;
 use std::io::Error as IOError;
+use tokio_core::reactor::{Core, Handle};
 
 use futures::prelude::{async, Future, Sink, Stream};
 
@@ -303,13 +304,19 @@ impl PeerManager {
     ) -> Result<(), ParseError> {
         match Torrent::new(metainfo_path, download_path) {
             Ok(torrent) => {
-                let stream =
-                    Tracker::get_peers(torrent.info_hash(), self.peer_id, torrent.trackers())?;
+                // TODO: consider having a global core?
+                let mut core = Core::new()?;
+                let stream = Tracker::get_peers(
+                    core.handle(),
+                    torrent.info_hash(),
+                    self.peer_id,
+                    torrent.trackers(),
+                )?;
 
                 let torrents = self.torrents.clone();
                 let npeers = self.npeers.clone();
                 let channel = self.manager_send.clone().unwrap();
-                stream.for_each(|ips| {
+                core.run(stream.for_each(|ips| {
                     for ip in ips {
                         let channel = channel.clone();
                         let torrents = torrents.clone();
@@ -317,7 +324,7 @@ impl PeerManager {
                         PeerManager::connect(TcpStream::connect(ip), torrents, npeers, channel);
                     }
                     Ok(())
-                });
+                }));
                 {
                     let mut torrents = self.torrents.lock().unwrap();
                     let info_hash = torrent.info_hash();
