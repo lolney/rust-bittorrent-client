@@ -26,12 +26,12 @@ pub enum ParseError {
 
 pub type hash = [u8; 20];
 
+// TODO: this needs an overhaul (boxing errors? using traits?)
 impl ParseError {
     pub fn new(string: String) -> ParseError {
         ParseError::Parse(string)
     }
 
-    // No polymorphic constructors
     pub fn new_str(string: &str) -> ParseError {
         ParseError::Parse(String::from(string))
     }
@@ -209,8 +209,11 @@ macro_rules! to_keys_serialize {
     }
 }
 
+/// Represents a type that can be serialized by bencoding
 pub trait Bencodable: Clone {
+    /// Converts self to a BencodeT object
     fn to_BencodeT(self) -> BencodeT;
+    /// Converts a BencodeT object to Self
     fn from_BencodeT(bencode_t: &BencodeT) -> Result<Self, ParseError>
     where
         Self: Sized;

@@ -68,9 +68,9 @@ impl From<ParseError> for NetworkError {
 
 macro_rules! acquire_torrent_lock {
     ($torrents:ident,$peer:ident,$torrent:ident) => (
-        let mut torrents = $torrents.lock().unwrap();
+        let mut torrents = $torrents.lock().expect("Torrents mutex poisoned");
         let hash = $peer.peer_info.info_hash;
-        let mut $torrent = torrents.get_mut(&hash).unwrap();
+        let mut $torrent = torrents.get_mut(&hash).expect("Expected torrent missing");
     );
 }
 
@@ -304,7 +304,6 @@ impl PeerManager {
     ) -> Result<(), ParseError> {
         match Torrent::new(metainfo_path, download_path) {
             Ok(torrent) => {
-                // TODO: consider having a global core?
                 let mut core = Core::new()?;
                 let stream = Tracker::get_peers(
                     core.handle(),
@@ -315,7 +314,9 @@ impl PeerManager {
 
                 let torrents = self.torrents.clone();
                 let npeers = self.npeers.clone();
-                let channel = self.manager_send.clone().unwrap();
+                let channel = self.manager_send
+                    .clone()
+                    .expect("Handle not called before adding torrent");
                 core.run(stream.for_each(|ips| {
                     for ip in ips {
                         let channel = channel.clone();
@@ -326,7 +327,7 @@ impl PeerManager {
                     Ok(())
                 }));
                 {
-                    let mut torrents = self.torrents.lock().unwrap();
+                    let mut torrents = self.torrents.lock().expect("Torrents mutex poisoned");
                     let info_hash = torrent.info_hash();
                     torrents.insert(info_hash, torrent);
                 }
@@ -363,8 +364,15 @@ impl PeerManager {
                 let info = PeerInfo {
                     peer_id: peer_id,
                     info_hash: info_hash,
-                    ip: stream.peer_addr().unwrap().ip().to_string(),
-                    port: stream.peer_addr().unwrap().port() as i64,
+                    ip: stream
+                        .peer_addr()
+                        .expect("Expected connection to have IP")
+                        .ip()
+                        .to_string(),
+                    port: stream
+                        .peer_addr()
+                        .expect("Expected connection to have port")
+                        .port() as i64,
                 };
                 let peer = Peer::new(info);
                 Ok(peer)
@@ -378,7 +386,7 @@ impl PeerManager {
         torrents: &Arc<Mutex<HashMap<hash, Torrent>>>,
     ) -> Result<bool, NetworkError> {
         // Find the matching torrent
-        let torrents = torrents.lock().unwrap();
+        let torrents = torrents.lock().expect("Torrents mutex poisoned");
         if torrents.contains_key(info_hash) {
             return Ok(true);
         }
@@ -564,7 +572,9 @@ impl PeerManager {
             if start.elapsed() >= ten_secs {
                 let mut i = 0;
                 for (id, priority) in peer_priority.clone().into_sorted_iter() {
-                    let comm = peers.get(&id).unwrap();
+                    let comm = peers
+                        .get(&id)
+                        .expect("Peer in priority queue but not comms map");
                     if i < max_uploaders {
                         comm.send(ManagerUpdate::Unchoke);
                     } else {
@@ -575,7 +585,7 @@ impl PeerManager {
             }
 
             // Select next piece to request
-            let mut torrents = torrents.lock().unwrap();
+            let mut torrents = torrents.lock().expect("Torrents mutex poisoned");
             torrents.retain(|info_hash, ref mut torrent| {
                 let mut peers_iter = peer_priority
                     .iter()
@@ -588,7 +598,9 @@ impl PeerManager {
                             // Request piece
                             torrent.inc_nrequests();
                             let (id, v) = peer.unwrap();
-                            let comm = peers.get(id).unwrap();
+                            let comm = peers
+                                .get(id)
+                                .expect("Peer in priority queue but not comms map");
                             comm.send(ManagerUpdate::Request(Peer::request(&piece)));
                             peer = peers_iter.next();
                         }
@@ -665,7 +677,7 @@ impl PeerManager {
 
         thread::spawn(move || {
             // listens for incoming connections
-            let listener = TcpListener::bind(port).unwrap();
+            let listener = TcpListener::bind(port).expect("Failed to bind listening port");
             listener.incoming().for_each(|stream| {
                 let torrents = torrents.clone();
                 /*
@@ -693,13 +705,12 @@ impl PeerManager {
 #[cfg(test)]
 mod tests {
     use bittorrent::PeerManager::*;
-    /*
+
     #[test]
     fn test_send_receive() {
         let mut manager = PeerManager::new();
+        manager.handle("3333");
         manager.add_torrent(::TEST_FILE.to_string(), ::DL_DIR.to_string());
-        manager.handle("6000");
-        manager.handle("6001");
-    }*/
+    }
 
 }

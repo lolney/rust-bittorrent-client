@@ -95,13 +95,21 @@ impl TrackerPeer {
     fn u32_from_ip(ip: &str) -> u32 {
         let mut total: u32 = 0;
         for (i, octet) in ip.split('.').enumerate() {
-            total += octet.parse::<u32>().unwrap() << ((3 - i) * 8)
+            total += octet
+                .parse::<u32>()
+                .expect(&format!("IP string incorrectly formated: {}", ip))
+                << ((3 - i) * 8)
         }
         total
     }
 
     pub fn from_binary(bytes: &[u8]) -> Result<TrackerPeer, ParseError> {
-        if bytes.len() < 6 {}
+        if bytes.len() < 6 {
+            return Err(parse_error!(
+                "Expected binary-encoded TrackerPeer, but data field not long enough: {}",
+                bytes.len()
+            ));
+        }
 
         Ok(TrackerPeer::Binary {
             ip: TrackerPeer::ip_from_u32(BigEndian::read_u32(&bytes[0..4])),
@@ -116,16 +124,21 @@ impl TrackerPeer {
         return buf;
     }
 
-    pub fn ip(&self) -> SocketAddr {
+    fn create_ip(ip: &str, port: usize) -> Result<SocketAddr, ParseError> {
+        match ip.parse() {
+            Ok(v) => Ok(SocketAddr::new(v, port as u16)),
+            Err(e) => Err(parse_error!("IP string incorrectly formatted: {}", ip)),
+        }
+    }
+
+    pub fn ip(&self) -> Result<SocketAddr, ParseError> {
         return match self {
-            &TrackerPeer::Binary { ref ip, port } => {
-                SocketAddr::new(ip.parse().unwrap(), port as u16)
-            }
+            &TrackerPeer::Binary { ref ip, port } => TrackerPeer::create_ip(ip, port),
             &TrackerPeer::Dictionary {
                 ref peer_id,
                 ref ip,
                 port,
-            } => SocketAddr::new(ip.parse().unwrap(), port as u16),
+            } => TrackerPeer::create_ip(ip, port),
         };
     }
 }
@@ -135,6 +148,8 @@ type Optioni64 = Option<i64>;
 type VecTrackerPeer = Vec<TrackerPeer>;
 
 impl Bencodable for TrackerPeer {
+    /// Note: expects input to be properly formatted, since only used to serialize
+    /// already sanitized or internally created data
     fn to_BencodeT(self) -> BencodeT {
         match self {
             TrackerPeer::Binary { ref ip, port } => {
@@ -254,9 +269,9 @@ impl Stream for RequestStream {
                 }
             }
         }
-        if res.is_some() {
+        if let Some(v) = res {
             self.reqs.remove(index);
-            return Ok(res.unwrap());
+            return Ok(v);
         }
         return Ok(Async::NotReady);
     }
@@ -309,7 +324,11 @@ impl Tracker {
 
     fn get_ips(chunk: Chunk) -> Result<Vec<SocketAddr>, ParseError> {
         let peers = Tracker::parse_response(&chunk)?;
-        return Ok(peers.iter().map(|info| info.ip()).collect());
+        let mut vec = Vec::new();
+        for info in peers {
+            vec.push(info.ip()?);
+        }
+        Ok(vec)
     }
 
     pub fn announce() {}
@@ -472,7 +491,7 @@ mod tests {
         ).unwrap();
 
         let future = stream.for_each(|vec| {
-            let ips: Vec<SocketAddr> = resp.peers.iter().map(|peer| peer.ip()).collect();
+            let ips: Vec<SocketAddr> = resp.peers.iter().map(|peer| peer.ip().unwrap()).collect();
             assert_eq!(vec, ips);
             Ok(())
         });
