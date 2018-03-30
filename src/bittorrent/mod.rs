@@ -460,7 +460,7 @@ mod bencoder;
 mod bedecoder;
 mod utils;
 mod torrent;
-mod Peer;
+mod peer;
 mod tracker;
 mod metainfo;
 mod PeerManager;

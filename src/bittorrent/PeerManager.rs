@@ -1,7 +1,7 @@
 extern crate core;
 
-use bittorrent::{hash, metainfo, torrent, ParseError, Peer::Action, Peer::Peer, Peer::PeerInfo,
-                 Piece, torrent::Torrent, tracker::Tracker};
+use bittorrent::{hash, metainfo, torrent, ParseError, Piece, peer::Action, peer::Peer,
+                 peer::PeerInfo, torrent::Torrent, tracker::Tracker};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::time::{Duration, Instant, SystemTime};
 use std::error::Error;

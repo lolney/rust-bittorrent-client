@@ -345,7 +345,7 @@ impl Peer {
 #[cfg(test)]
 mod tests {
 
-    use bittorrent::Peer::*;
+    use bittorrent::peer::*;
     use bit_vec::BitVec;
     use bittorrent::{ParseError, Piece, PieceData};
     use std::mem::transmute;

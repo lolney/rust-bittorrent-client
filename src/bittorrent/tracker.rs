@@ -2,7 +2,7 @@
 */
 use bittorrent::{hash, Bencodable, BencodeT, Keys, ParseError};
 use std::net::SocketAddr;
-use bittorrent::Peer::{Peer, PeerInfo};
+use bittorrent::peer::{Peer, PeerInfo};
 use bittorrent::bedecoder::parse;
 use byteorder::{BigEndian, ByteOrder};
 use futures::{Async, Future, Stream};
@@ -323,7 +323,7 @@ mod tests {
 
     use bittorrent::tracker::*;
     use bittorrent::bencoder::encode;
-    use bittorrent::Peer::Peer;
+    use bittorrent::peer::Peer;
 
     use futures::future::{ok, Future};
     use tokio_core::reactor::{Core, Handle};
