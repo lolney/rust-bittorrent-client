@@ -1,28 +1,11 @@
+extern crate bittorrent;
 extern crate cursive;
+extern crate cursive_table_view;
 
-use cursive::Cursive;
-use cursive::views::{Dialog, TextView};
+pub mod client;
+
+use client::client as c;
 
 fn main() {
-    let mut siv = Cursive::new();
-
-    siv.add_global_callback('q', |s| s.quit());
-
-    siv.add_layer(
-        Dialog::around(TextView::new("Hello Dialog!"))
-            .title("Cursive")
-            .button("New", |s| new(s))
-            .button("Pause", |s| pause(s))
-            .button("Remove", |s| remove(s))
-            .button("Quit", |s| s.quit()),
-    );
-
-    // Starts the event loop.
-    siv.run();
+    c::run();
 }
-
-fn new(curs: &Cursive) {}
-
-fn pause(curs: &Cursive) {}
-
-fn remove(curs: &Cursive) {}

@@ -14,8 +14,13 @@ futures = "0.1.18"
 tokio-core = "0.1.5"
 hyper = "0.11.22"
 url = "1.7.0"   
-cursive = "*"
+cursive = { version = "0.7", default-features = false }
+cursive_table_view = "0.4.2"
 futures-await = "0.1"
+
+[lib]
+name = "bittorrent"
+path = "src/lib.rs"
 
 [[bin]]
 name = "rust-bittorrent-client"
