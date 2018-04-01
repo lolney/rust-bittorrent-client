@@ -5,6 +5,8 @@ use std::thread;
 use std::time::Duration;
 use cursive::views::Counter;
 use cursive_table_view::{TableView, TableViewItem};
+use rand::{thread_rng, Rng};
+use client::table;
 
 pub struct Client {
     curs: Cursive,
@@ -18,20 +20,14 @@ fn fake_load(n_max: usize, counter: &Counter) {
     }
 }
 
-fn coffee_break(s: &mut Cursive) {
+fn push_dialog(s: &mut Cursive) {
     // A little break before things get serious.
     s.add_layer(
         Dialog::new()
             .title("Preparation complete")
             .content(TextView::new("Now, the real deal!").center())
-            .button("Quit", |s| s.pop_layer()),
+            .button("Close", |s| s.pop_layer()),
     );
-}
-
-pub fn new() -> Client {
-    Client {
-        curs: Cursive::new(),
-    }
 }
 
 fn progress(curs: &Cursive) -> ProgressBar {
@@ -46,22 +42,29 @@ fn progress(curs: &Cursive) -> ProgressBar {
             fake_load(n_max, &counter);
 
             // When we're done, send a callback through the channel
-            cb.send(Box::new(coffee_break)).unwrap();
+            cb.send(Box::new(push_dialog)).unwrap();
     });
 }
 
 pub fn run() {
-    let mut curs = Cursive::new();
+    let mut rng = thread_rng();
+    let mut curs = Cursive::new(); /*
+    let mut manager = PeerManager::new();
+    let port = "3000";
+    let recv = manager.handle(port);*/
+
     curs.add_global_callback('q', |s| s.quit());
 
+    let table = table::new();
+    /*
     let list = ListView::new().with(|list| {
-        // We can also add children procedurally
-        list.add_child("Torrent", progress(&curs));
-        for i in 0..50 {
-            list.add_child(&format!("Item {}", i), TextView::new("Hello"));
+        for i in 0..20 {
+            list.add_child(&format!("Torrent {}", i), progress(&curs));
         }
     });
 
+    //let table_container = LinearLayout::horizontal().child(list).child(table);
+    */
     let actions = LinearLayout::horizontal()
         .child(Button::new("New", add))
         .child(Button::new("Remove", remove))
@@ -69,7 +72,7 @@ pub fn run() {
         .child(Button::new("Quit", Cursive::quit));
 
     curs.add_layer(
-        Dialog::around(LinearLayout::vertical().child(list).child(actions))
+        Dialog::around(LinearLayout::vertical().child(table).child(actions))
             .title("Active Torrents"),
     );
 

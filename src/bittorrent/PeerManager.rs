@@ -133,13 +133,20 @@ enum ManagerUpdate {
     None,
 }
 
-enum Info {
-    Complete { info_hash: hash },
-    NPeers { info_hash: hash, n: usize },
-    Download { info_hash: hash, n: usize },
-    Upload { info_hash: hash, n: usize },
-    Downloaded { info_hash: hash, n: usize },
-    Uploaded { info_hash: hash, n: usize },
+enum Status {
+    Paused,
+    Running,
+    Complete,
+}
+
+struct Info {
+    info_hash: hash,
+    name: String,
+    status: Status,
+    progress: f32,
+    up: usize,
+    down: usize,
+    npeers: usize,
 }
 
 pub struct NewPeerMsg {
@@ -501,125 +508,6 @@ impl PeerManager {
         }
     }
 
-    fn process_queue(
-        iter: &mut mpsc::TryIter<PeerUpdate>,
-        peer_priority: &mut PriorityQueue<hash, PeerPriority>,
-        bitfield: &mut BitVec,
-        peer_id: &hash,
-    ) -> bool {
-        match iter.next() {
-            Some(msg) => {
-                msg.process(peer_id, peer_priority, bitfield);
-                PeerManager::process_queue(iter, peer_priority, bitfield, peer_id)
-            }
-            None => true,
-        }
-    }
-
-    // TODO: This is a strong candidate to be replaced by a task system
-    // Task: returns Option<Update>
-    fn run_loop(
-        recv: mpsc::Receiver<NewPeerMsg>,
-        torrents: Arc<Mutex<HashMap<hash, Torrent>>>,
-        npeers: Arc<AtomicUsize>,
-    ) {
-        let max_uploaders = 5;
-        let mut peer_priority: PriorityQueue<hash, PeerPriority> = PriorityQueue::new();
-        let mut peers: HashMap<hash, ManagerComm> = HashMap::new();
-        let mut bitfields: HashMap<hash, BitVec> = HashMap::new();
-
-        let start = Instant::now();
-        let ten_secs = Duration::from_secs(10);
-
-        loop {
-            // TODO: consider sleep here
-            // Receive messages sent when a new peer is added
-            match recv.try_recv() {
-                Ok(newpeer) => {
-                    peer_priority.push(newpeer.peer_id, newpeer.priority);
-                    peers.insert(newpeer.peer_id, newpeer.comm);
-                }
-                Err(err) => match err {
-                    mpsc::TryRecvError::Empty => {}
-                    mpsc::TryRecvError::Disconnected => {
-                        info!("TCP listener thread has shut down. Controller now shutting down.");
-                        return;
-                    }
-                },
-            }
-
-            // A message can arrive between the point where we check the queue
-            // and determine which pieces to request, but it's probably not critical
-            // that this information is 100% up to date -
-            // this determination will probably not happen whenever possible
-            peers.retain(|peer_id, comm| {
-                let mut bitfield = bitfields.entry(peer_id.clone()).or_insert(BitVec::new());
-                let disconnected = PeerManager::process_queue(
-                    &mut comm.try_iter(),
-                    &mut peer_priority,
-                    bitfield,
-                    &peer_id,
-                );
-                if disconnected {
-                    npeers.fetch_sub(1, AtomicOrdering::SeqCst);
-                }
-                disconnected
-            });
-
-            /*
-            Choke: stop sending to this peer
-            Choking algo (according to Bittorrent spec):
-            - Check every 10 seconds
-            - Unchoke 4 peers for which we have the best download rates (who are interested)
-            - Peer with better download rate becomes interest: choke worst uploader
-            - Maintain one Peer, regardless of download rate
-            */
-            if start.elapsed() >= ten_secs {
-                let mut i = 0;
-                for (id, priority) in peer_priority.clone().into_sorted_iter() {
-                    let comm = peers
-                        .get(&id)
-                        .expect("Peer in priority queue but not comms map");
-                    if i < max_uploaders {
-                        comm.send(ManagerUpdate::Unchoke);
-                    } else {
-                        comm.send(ManagerUpdate::Choke);
-                    }
-                    i = i + 1;
-                }
-            }
-
-            // Select next piece to request
-            let mut torrents = torrents.lock().expect("Torrents mutex poisoned");
-            torrents.retain(|info_hash, ref mut torrent| {
-                let mut peers_iter = peer_priority
-                    .iter()
-                    .filter(|&(k, v)| v.peer_choking && v.info_hash == *info_hash);
-                let mut peer = peers_iter.next();
-
-                while peer.is_some() && torrent.nrequests < ::REQUESTS_LIMIT {
-                    match torrent.select_piece() {
-                        Some(piece) => {
-                            // Request piece
-                            torrent.inc_nrequests();
-                            let (id, v) = peer.unwrap();
-                            let comm = peers
-                                .get(id)
-                                .expect("Peer in priority queue but not comms map");
-                            comm.send(ManagerUpdate::Request(Peer::request(&piece)));
-                            peer = peers_iter.next();
-                        }
-                        None => {
-                            info!("Torrent \"{}\" complete", torrent.name());
-                            return false;
-                        }
-                    }
-                }
-                true
-            });
-        }
-    }
-
     fn connect(
         stream: Result<TcpStream, IOError>,
         torrents: Arc<Mutex<HashMap<hash, Torrent>>>,
@@ -705,10 +593,171 @@ impl PeerManager {
         let npeers = self.npeers.clone();
         let (info_send, info_recv) = mpsc::channel();
         thread::spawn(move || {
-            PeerManager::run_loop(manager_recv, torrents, npeers);
+            Controller::new(manager_recv, torrents, npeers, info_send).run_loop();
         });
 
         return info_recv;
+    }
+}
+
+macro_rules! torrents {
+    () => {
+        self.torrents.lock().expect("Torrents mutex poisoned");
+    }
+}
+
+struct Controller {
+    recv: mpsc::Receiver<NewPeerMsg>,
+    torrents: Arc<Mutex<HashMap<hash, Torrent>>>,
+    npeers: Arc<AtomicUsize>,
+    send: mpsc::Sender<Info>,
+    peer_priority: PriorityQueue<hash, PeerPriority>,
+    peers: HashMap<hash, ManagerComm>,
+    bitfield: HashMap<hash, BitVec>,
+}
+
+impl Controller {
+    pub fn new(
+        recv: mpsc::Receiver<NewPeerMsg>,
+        torrents: Arc<Mutex<HashMap<hash, Torrent>>>,
+        npeers: Arc<AtomicUsize>,
+        send: mpsc::Sender<Info>,
+    ) {
+        Controller {
+            recv: recv,
+            torrents: torrents,
+            npeers: npeers,
+            send: send,
+            peer_priority: PriorityQueue::new(),
+            peers: HashMap::new(),
+            bitfield: HashMap::new(),
+        }
+    }
+
+    // TODO: This is a strong candidate to be replaced by a task system;
+    // Task: returns Option<Update>
+    pub fn run_loop(&mut self) {
+        let max_uploaders = 5;
+
+        let start = Instant::now();
+        let ten_secs = Duration::from_secs(10);
+
+        loop {
+            /// Send updates at 1-second interval
+            {
+                let mut torrents = torrents!();
+                let out = torrents
+                    .iter()
+                    .map(|info_hash, t| self.create_info(info_hash, t, Status::Running))
+                    .collect();
+                send.send(out)
+            }
+
+            /// Receive messages sent when a new peer is added
+            match self.recv.try_recv() {
+                Ok(newpeer) => {
+                    self.peer_priority.push(newpeer.peer_id, newpeer.priority);
+                    self.peers.insert(newpeer.peer_id, newpeer.comm);
+                }
+                Err(err) => match err {
+                    mpsc::TryRecvError::Empty => {}
+                    mpsc::TryRecvError::Disconnected => {
+                        info!("TCP listener thread has shut down. Controller now shutting down.");
+                        return;
+                    }
+                },
+            }
+
+            /// Check messages from peers
+            // A message can arrive between the point where we check the queue
+            // and determine which pieces to request, but it's probably not critical
+            // that this information is 100% up to date -
+            // this determination will probably not happen whenever possible
+            self.peers.retain(|peer_id, comm| {
+                let mut bitfield = bitfields.entry(peer_id.clone()).or_insert(BitVec::new());
+                let disconnected = PeerManager::process_queue(&mut comm.try_iter(), &peer_id);
+                if disconnected {
+                    nself.peers.fetch_sub(1, AtomicOrdering::SeqCst);
+                }
+                disconnected
+            });
+
+            // Update choking on 10-sec intervals
+            /*
+            Choke: stop sending to this peer
+            Choking algo (according to Bittorrent spec):
+            - Check every 10 seconds
+            - Unchoke 4 peers for which we have the best download rates (who are interested)
+            - Peer with better download rate becomes interest: choke worst uploader
+            - Maintain one Peer, regardless of download rate
+            */
+            if start.elapsed() >= ten_secs {
+                let mut i = 0;
+                for (id, priority) in self.peer_priority.clone().into_sorted_iter() {
+                    let comm = self.peers
+                        .get(&id)
+                        .expect("Peer in priority queue but not comms map");
+                    if i < max_uploaders {
+                        comm.send(ManagerUpdate::Unchoke);
+                    } else {
+                        comm.send(ManagerUpdate::Choke);
+                    }
+                    i = i + 1;
+                }
+            }
+
+            /// Select next piece to request
+            let mut torrents = torrents!();
+            torrents.retain(|info_hash, ref mut torrent| {
+                let mut peers_iter = self.peer_priority
+                    .iter()
+                    .filter(|&(k, v)| v.peer_choking && v.info_hash == *info_hash);
+                let mut peer = peers_iter.next();
+
+                while peer.is_some() && torrent.nrequests < ::REQUESTS_LIMIT {
+                    match torrent.select_piece() {
+                        Some(piece) => {
+                            // Request piece
+                            torrent.inc_nrequests();
+                            let (id, v) = peer.unwrap();
+                            let comm = self.peers
+                                .get(id)
+                                .expect("Peer in priority queue but not comms map");
+                            comm.send(ManagerUpdate::Request(Peer::request(&piece)));
+                            peer = peers_iter.next();
+                        }
+                        None => {
+                            info!("Torrent \"{}\" complete", torrent.name());
+                            send.send(self.create_info(info_hash, torrent, Status::Complete));
+                            return false;
+                        }
+                    }
+                }
+                true
+            });
+        }
+    }
+
+    fn process_queue(&mut self, iter: &mut mpsc::TryIter<PeerUpdate>, peer_id: &hash) -> bool {
+        match iter.next() {
+            Some(msg) => {
+                msg.process(peer_id, &mut self.peer_priority, bitfield);
+                PeerManager::process_queue(iter, &mut self.peer_priority, bitfield, peer_id)
+            }
+            None => true,
+        }
+    }
+
+    fn create_info(info_hash: hash, torrent: &Torrent, status: Status) -> Info {
+        Info {
+            info_hash: info_hash,
+            name: torrent.name(),
+            status: status,
+            progress: torrent.downloaded() as f32 / torrent.size() as f32,
+            up: torrent.upload_rate(),
+            down: torrent.download_rate(),
+            npeers: self.npeers.fetch(),
+        }
     }
 }
 
@@ -736,6 +785,11 @@ mod tests {
                 _ => (),
             }
         }
+    }
+
+    fn test_controller() {
+        // Create controller
+        // Send peer updates until complete
     }
 
     // Tests for worker and manager?

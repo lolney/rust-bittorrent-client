@@ -33,6 +33,8 @@ pub struct Torrent {
     pub nrequests: usize,
     piece_queue: PriorityQueue<usize, usize>, // index -> rarity
     outstanding_requests: VecDeque<Request>,
+    dl_rate: Rate,
+    ul_rate: Rate,
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -63,6 +65,39 @@ impl DLMarker {
     }
 }
 
+#[derive(PartialEq, Debug, Clone)]
+struct Rate {
+    total: usize,
+    buffer: VecDeque<(Instant, usize)>,
+}
+
+impl Rate {
+    pub fn new() -> Rate {
+        Rate {
+            toal: 0,
+            buffer: VecDeque::new(),
+        }
+    }
+
+    fn prune(&mut self) {
+        while !self.buffer.is_empty() && self.buffer[0][0].elapsed() > Duration::from_secs(5) {
+            let (_, old) = self.buffer.pop_front().unwrap();
+            self.total -= old;
+        }
+    }
+
+    pub fn rate(&mut self) -> usize {
+        self.prune();
+        self.total
+    }
+
+    pub fn update(&mut self, n: usize) {
+        self.prune();
+        self.buffer.push_back((Instant::now(), n));
+        self.total += n;
+    }
+}
+
 impl Torrent {
     pub fn new(infofile: String, download_dir: String) -> Result<Torrent, ParseError> {
         match MetaInfo::read(infofile) {
@@ -77,6 +112,8 @@ impl Torrent {
                     nrequests: 0,
                     piece_queue: Torrent::init_queue(npieces),
                     outstanding_requests: VecDeque::new(),
+                    dl_rate: Rate::new(),
+                    ul_rate: Rate::new(),
                 })
             }
             Err(e) => Err(ParseError::from_parse_string(
@@ -99,6 +136,28 @@ impl Torrent {
         self.metainfo.info().file_info.name()
     }
 
+    pub fn piece_length(&self) -> i64 {
+        self.metainfo.info().piece_length
+    }
+
+    /// Returns number of bytes downloaded
+    pub fn downloaded(&self) -> usize {
+        self.bitfield.iter().filter(|x| *x).count() * self.piece_length() as usize
+    }
+
+    /// Returns the total size in bytes of the torrent
+    pub fn size(&self) -> usize {
+        self.piece_length() as usize * self.metainfo.info().pieces.len()
+    }
+
+    pub fn download_rate(&mut self) -> usize {
+        self.dl_rate.rate()
+    }
+
+    pub fn upload_rate(&mut self) -> usize {
+        self.ul_rate.rate()
+    }
+
     pub fn inc_nrequests(&mut self) {
         self.nrequests = self.nrequests + 1;
     }
@@ -110,7 +169,7 @@ impl Torrent {
     }
 
     fn default_piece(&self, index: usize) -> Piece {
-        Piece::new(index as u32, 0, self.metainfo.info().piece_length as u32)
+        Piece::new(index as u32, 0, self.piece_length() as u32)
     }
 
     /// select the next piece to be requested
@@ -159,6 +218,7 @@ impl Torrent {
     pub fn write_block(&mut self, piece: &PieceData) -> Result<(), IOError> {
         self.remove_request(piece);
         if self.metainfo.info().valid_hash(piece) {
+            self.dl_rate.update(piece.piece.length);
             self.write_block_raw(piece)
         } else {
             Err(IOError::new(
@@ -194,6 +254,7 @@ impl Torrent {
         match self.bitfield.get(piece.index as usize) {
             Some(have) => {
                 if have || self.have_block(piece) {
+                    self.ul_rate.update(piece.length);
                     self.read_block_raw(piece)
                 } else {
                     Err(IOError::new(
@@ -305,7 +366,7 @@ impl Torrent {
     /// Update data structure to reflect parts of piece
     /// that have been downloaded
     fn insert_piece(&mut self, piece: &Piece) {
-        let max_length: u32 = self.metainfo.info().piece_length as u32;
+        let max_length: u32 = self.piece_length() as u32;
 
         if piece.begin == 0 && piece.length == max_length {
             // Downloaded whole piece at once
@@ -354,7 +415,7 @@ impl Torrent {
     /// Map piece -> files
     fn map_files(&self, piece: &Piece) -> Vec<FilePiece> {
         let mut vec = Vec::new();
-        let piece_length = self.metainfo.info().piece_length;
+        let piece_length = self.piece_length();
 
         let mut iter = self.files.iter();
         let mut total: i64 = 0;
