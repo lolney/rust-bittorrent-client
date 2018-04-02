@@ -1,6 +1,7 @@
 *.txt
 /target
 *.torrent
+*.DS_Store
 
 \.vscode/
 
