@@ -24,6 +24,8 @@ pub enum Action {
     Request(Vec<Piece>),
     Write(PieceData),
     InterestedChange,
+    Have(u32),
+    Bitfield(BitVec),
     None,
 }
 
@@ -162,12 +164,16 @@ impl Peer {
             return Err("Received have message with piece index that exceeds number of pieces");
         }
         self.bitfield.set(piece_index as usize, true);
-        Ok(Action::None)
+        Ok(Action::Have(piece_index))
     }
 
     pub fn parse_bitfield(&mut self, bitfield: &[u8]) -> Result<Action, &'static str> {
-        self.bitfield = BitVec::from_bytes(bitfield);
-        Ok(Action::None)
+        if self.bitfield.len() == 0 || (bitfield.len() == self.bitfield.len()) {
+            self.bitfield = BitVec::from_bytes(bitfield);
+        } else {
+            return Err("Received bitfield with length different from existing bitfield");
+        }
+        Ok(Action::Bitfield(self.bitfield.clone()))
     }
 
     pub fn parse_piece_generic(&mut self, msg: &[u8]) -> Piece {
@@ -416,7 +422,12 @@ mod tests {
             0b10000000000000000000000000000000 as u32,
             0b10000000000000000000000000000000 as u32
         );
-        peer.parse_message(&bitfield);
+        assert_eq!(
+            peer.parse_message(&bitfield),
+            Err("Received bitfield with length different from existing bitfield")
+        );
+        peer.bitfield = BitVec::new();
+        peer.parse_message(&bitfield).unwrap();
         assert_eq!(peer.bitfield.get(32).unwrap(), true);
 
         assert_eq!(peer.bitfield.get(7).unwrap(), false);

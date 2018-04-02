@@ -5,7 +5,7 @@ An implementation of the Bittorrent spec in Rust, along with a terminal-based cl
 ## Running the client
 
 ```
-git clone 
+git clone https://github.com/lolney/rust-bittorrent-client.git
 cd rust-bittorrent-client
 cargo run
 ```

@@ -7,6 +7,7 @@
 #![feature(try_trait)]
 #![feature(proc_macro, conservative_impl_trait, generators)]
 #![allow(dead_code)]
+#![feature(collections)]
 
 extern crate bit_vec;
 extern crate byteorder;

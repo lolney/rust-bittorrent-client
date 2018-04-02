@@ -74,13 +74,13 @@ struct Rate {
 impl Rate {
     pub fn new() -> Rate {
         Rate {
-            toal: 0,
+            total: 0,
             buffer: VecDeque::new(),
         }
     }
 
     fn prune(&mut self) {
-        while !self.buffer.is_empty() && self.buffer[0][0].elapsed() > Duration::from_secs(5) {
+        while !self.buffer.is_empty() && self.buffer[0].0.elapsed() > Duration::from_secs(5) {
             let (_, old) = self.buffer.pop_front().unwrap();
             self.total -= old;
         }
@@ -172,6 +172,10 @@ impl Torrent {
         Piece::new(index as u32, 0, self.piece_length() as u32)
     }
 
+    pub fn npieces(&self) -> usize {
+        self.bitfield.len()
+    }
+
     /// select the next piece to be requested
     pub fn select_piece(&mut self) -> Option<Piece> {
         let timeout = Duration::from_secs(::READ_TIMEOUT);
@@ -218,7 +222,7 @@ impl Torrent {
     pub fn write_block(&mut self, piece: &PieceData) -> Result<(), IOError> {
         self.remove_request(piece);
         if self.metainfo.info().valid_hash(piece) {
-            self.dl_rate.update(piece.piece.length);
+            self.dl_rate.update(piece.piece.length as usize);
             self.write_block_raw(piece)
         } else {
             Err(IOError::new(
@@ -254,7 +258,7 @@ impl Torrent {
         match self.bitfield.get(piece.index as usize) {
             Some(have) => {
                 if have || self.have_block(piece) {
-                    self.ul_rate.update(piece.length);
+                    self.ul_rate.update(piece.length as usize);
                     self.read_block_raw(piece)
                 } else {
                     Err(IOError::new(

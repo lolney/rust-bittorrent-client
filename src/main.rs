@@ -5,8 +5,8 @@ extern crate rand;
 
 pub mod client;
 
-use client::client as c;
+use client::client as cl;
 
 fn main() {
-    c::run();
+    cl::run();
 }
