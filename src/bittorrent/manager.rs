@@ -23,7 +23,9 @@ use tokio_core::reactor::{Core, Handle};
 
 use futures::prelude::{async, Future, Sink, Stream};
 
-pub struct PeerManager {
+/// This module contains the main point of interaction with the library, Manager.
+
+pub struct Manager {
     /*
     This should be a download rate-based PriorityQueue
     Coordinating thread needs to know:
@@ -100,19 +102,19 @@ impl PeerUpdate {
         match self {
             PeerUpdate::DownloadSpeed(speed) => {
                 peers.change_priority_by(peer_id, |priority| priority.set_download(speed));
-                true
+                false
             }
             PeerUpdate::InterestedChange => {
                 peers.change_priority_by(peer_id, PeerPriority::flip_interested);
-                true
+                false
             }
             PeerUpdate::ChokingChange => {
                 peers.change_priority_by(peer_id, PeerPriority::flip_choking);
-                true
+                false
             }
             PeerUpdate::Have(piece_index) => {
                 bitfield.set(piece_index as usize, true);
-                true
+                false
             }
             PeerUpdate::Bitfield(_bitfield) => {
                 if bitfield.len() == 0 {
@@ -122,12 +124,9 @@ impl PeerUpdate {
                 } else {
                     panic!("PeerUpdate sent invalid bitfield");
                 }
-                true
-            }
-            PeerUpdate::Disconnect => {
-                remove(peers, peer_id);
                 false
             }
+            PeerUpdate::Disconnect => true,
         }
     }
 }
@@ -310,9 +309,9 @@ fn remove(pq: &mut PriorityQueue<hash, PeerPriority>, id: &hash) {
     pq.pop();
 }
 
-impl PeerManager {
-    fn new() -> PeerManager {
-        PeerManager {
+impl Manager {
+    fn new() -> Manager {
+        Manager {
             torrents: Arc::new(Mutex::new(HashMap::new())),
             peer_id: Peer::gen_peer_id(),
             npeers: Arc::new(AtomicUsize::new(0)),
@@ -358,7 +357,7 @@ impl PeerManager {
                 let channel = channel.clone();
                 let torrents = torrents.clone();
                 let npeers = npeers.clone();
-                PeerManager::connect(TcpStream::connect(ip), torrents, npeers, channel);
+                Manager::connect(TcpStream::connect(ip), torrents, npeers, channel);
             }
             Ok(())
         }));
@@ -379,7 +378,7 @@ impl PeerManager {
                                          // read handshake and create peer
         match Peer::parse_handshake(&buf) {
             Ok((peer_id, info_hash)) => {
-                PeerManager::match_torrent(&info_hash, torrents)?;
+                Manager::match_torrent(&info_hash, torrents)?;
                 let info = PeerInfo {
                     peer_id: peer_id,
                     info_hash: info_hash,
@@ -558,15 +557,14 @@ impl PeerManager {
                         ::MAX_PEERS
                     );
                 } else {
-                    match PeerManager::handle_client(&stream, &torrents) {
+                    match Manager::handle_client(&stream, &torrents) {
                         Ok(peer) => {
                             info!("New peer connected: {:?}", peer.peer_id());
-                            let peer_comm =
-                                PeerManager::register_peer(&peer, npeers, &manager_send);
+                            let peer_comm = Manager::register_peer(&peer, npeers, &manager_send);
 
                             thread::spawn(move || {
                                 // manages new connection
-                                PeerManager::receive(peer, stream, torrents, peer_comm);
+                                Manager::receive(peer, stream, torrents, peer_comm);
                             });
                         }
                         Err(err) => {
@@ -608,7 +606,7 @@ impl PeerManager {
                 /*let (p,c) = unsafe { 
                         bounded_fast::new(10);
                     };*/
-                PeerManager::connect(stream, torrents, npeers.clone(), manager_send.clone());
+                Manager::connect(stream, torrents, npeers.clone(), manager_send.clone());
             });
         });
 
@@ -698,42 +696,40 @@ impl Controller {
                 }
             }
 
-            /// Select next piece to request
-            {
-                let mut torrents = torrents!(self);
-                torrents.retain(|info_hash, ref mut torrent: &mut Torrent| {
-                    let mut peers_iter = self.peer_priority
-                        .iter()
-                        .filter(|&(k, v)| v.peer_choking && v.info_hash == *info_hash);
-                    let mut peer = peers_iter.next();
-
-                    while peer.is_some() && torrent.nrequests < ::REQUESTS_LIMIT {
-                        match torrent.select_piece() {
-                            Some(piece) => {
-                                // Request piece
-                                torrent.inc_nrequests();
-                                let (id, v) = peer.unwrap();
-                                let comm = self.peers
-                                    .get(id)
-                                    .expect("Peer in priority queue but not comms map");
-                                comm.send(ManagerUpdate::Request(Peer::request(&piece)));
-                                peer = peers_iter.next();
-                            }
-                            None => {
-                                info!("Torrent \"{}\" complete", torrent.name());
-                                self.send.send(self.create_info(
-                                    info_hash,
-                                    torrent,
-                                    Status::Complete,
-                                ));
-                                return false;
-                            }
-                        }
-                    }
-                    true
-                });
-            }
+            self.make_requests();
         }
+    }
+
+    fn make_requests(&mut self) {
+        let mut torrents = torrents!(self);
+        torrents.retain(|info_hash, ref mut torrent: &mut Torrent| {
+            let mut peers_iter = self.peer_priority
+                .iter()
+                .filter(|&(k, v)| !v.peer_choking && v.info_hash == *info_hash);
+            let mut peer = peers_iter.next();
+
+            while peer.is_some() && torrent.nrequests < ::REQUESTS_LIMIT {
+                match torrent.select_piece() {
+                    Some(piece) => {
+                        // Request piece
+                        torrent.inc_nrequests();
+                        let (id, v) = peer.unwrap();
+                        let comm = self.peers
+                            .get(id)
+                            .expect("Peer in priority queue but not comms map");
+                        comm.send(ManagerUpdate::Request(Peer::request(&piece)));
+                        peer = peers_iter.next();
+                    }
+                    None => {
+                        info!("Torrent \"{}\" complete", torrent.name());
+                        self.send
+                            .send(self.create_info(info_hash, torrent, Status::Complete));
+                        return false;
+                    }
+                }
+            }
+            true
+        });
     }
 
     fn send_update(&self) {
@@ -779,11 +775,13 @@ impl Controller {
                 Controller::process_queue(&mut comm.try_iter(), &peer_id, bitfield, peer_priority);
             if disconnected {
                 npeers.fetch_sub(1, AtomicOrdering::SeqCst);
+                remove(peer_priority, peer_id);
             }
-            disconnected
+            !disconnected
         });
     }
 
+    /// return true if disconnected; false otherwise
     fn process_queue(
         iter: &mut mpsc::TryIter<PeerUpdate>,
         peer_id: &hash,
@@ -792,10 +790,10 @@ impl Controller {
     ) -> bool {
         match iter.next() {
             Some(msg) => {
-                msg.process(peer_id, peer_priority, bitfield);
-                Controller::process_queue(iter, peer_id, bitfield, peer_priority)
+                let res = msg.process(peer_id, peer_priority, bitfield);
+                res || Controller::process_queue(iter, peer_id, bitfield, peer_priority)
             }
-            None => true,
+            None => false,
         }
     }
 
@@ -814,10 +812,10 @@ impl Controller {
 
 #[cfg(test)]
 mod tests {
-    use bittorrent::PeerManager::*;
+    use bittorrent::manager::*;
 
     fn create_controller(port: &'static str) -> mpsc::Receiver<Info> {
-        let mut manager = PeerManager::new();
+        let mut manager = Manager::new();
         let receiver = manager.handle(port);
         manager.add_torrent(::TEST_FILE.to_string(), ::DL_DIR.to_string());
         return receiver;
@@ -860,7 +858,7 @@ mod tests {
             ip: "127.0.0.1".to_string(),
             port: 3001,
         });
-        let peer_comm = PeerManager::register_peer(&peer, npeers.clone(), &manager_send);
+        let peer_comm = Manager::register_peer(&peer, npeers.clone(), &manager_send);
 
         {
             let mut ts = torrents.lock().unwrap();
@@ -883,15 +881,23 @@ mod tests {
         download_speed: 0,
         peer_choking: true,*/
         // Check that updates have been reflected
-        controller.check_messages();
-        let top = controller.peer_priority.peek().unwrap();
-        assert_eq!(top.1.peer_interested, true);
-        assert_eq!(top.1.peer_choking, false);
-        assert_eq!(top.1.download_speed, 100);
-        assert_eq!(controller.bitfields[top.0][0], true);
+        {
+            controller.check_messages();
+            let top = controller.peer_priority.peek().unwrap();
+            assert_eq!(top.1.peer_interested, true);
+            assert_eq!(top.1.peer_choking, false);
+            assert_eq!(top.1.download_speed, 100);
+            assert_eq!(controller.bitfields[top.0][0], true);
+
+            assert_eq!(controller.peer_priority.len(), 1);
+            assert_eq!(controller.peers.len(), 1);
+        }
 
         // Disconnect
         peer_comm.send(PeerUpdate::Disconnect);
+        controller.check_messages();
+        assert_eq!(controller.peer_priority.len(), 0);
+        assert_eq!(controller.peers.len(), 0);
     }
 
     // Tests for worker?

@@ -466,4 +466,4 @@ mod torrent;
 mod peer;
 mod tracker;
 mod metainfo;
-mod PeerManager;
+mod manager;
