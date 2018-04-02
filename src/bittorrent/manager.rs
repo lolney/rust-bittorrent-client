@@ -23,7 +23,11 @@ use tokio_core::reactor::{Core, Handle};
 
 use futures::prelude::{async, Future, Sink, Stream};
 
-/// This module contains the main point of interaction with the library, Manager.
+/// This module contains the main point of interaction with the library, `Manager`.
+/// Calling `Manager::new().handle()` will spawn the `Controller` thread,
+/// which chooses which pieces to request and which peers to upload to.
+/// Each connection has a `Worker` task, which handles communication with a `Peer`,
+/// reads and writes to disk, and sends relevant updates to the Controller.
 
 pub struct Manager {
     /*
@@ -81,7 +85,7 @@ macro_rules! acquire_torrent_lock {
 /// just send updates as needed.
 /// We just lock for reads and writes, then,
 /// which would be expensive to send anyway
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum PeerUpdate {
     DownloadSpeed(usize),
     InterestedChange,
@@ -139,20 +143,45 @@ enum ManagerUpdate {
     None,
 }
 
-enum Status {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
     Paused,
     Running,
     Complete,
 }
 
-struct Info {
-    info_hash: hash,
-    name: String,
-    status: Status,
-    progress: f32,
-    up: usize,
-    down: usize,
-    npeers: usize,
+#[derive(Debug, Clone)]
+pub struct Info {
+    pub info_hash: hash,
+    pub name: String,
+    pub status: Status,
+    pub progress: f32,
+    pub up: usize,
+    pub down: usize,
+    pub npeers: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum InfoMsg {
+    All(Vec<Info>),
+    One(Info),
+}
+
+impl Ord for Status {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let to_int = |s| match s {
+            Paused => 0,
+            Running => 1,
+            Complete => 2,
+        };
+        to_int(self).cmp(&to_int(other))
+    }
+}
+
+impl PartialOrd for Status {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 pub struct NewPeerMsg {
@@ -310,7 +339,7 @@ fn remove(pq: &mut PriorityQueue<hash, PeerPriority>, id: &hash) {
 }
 
 impl Manager {
-    fn new() -> Manager {
+    pub fn new() -> Manager {
         Manager {
             torrents: Arc::new(Mutex::new(HashMap::new())),
             peer_id: Peer::gen_peer_id(),
@@ -329,10 +358,10 @@ impl Manager {
     /// Add a new torrent from file `metainfo_path`, downloading
     pub fn add_torrent(
         &mut self,
-        metainfo_path: String,
-        download_path: String,
+        metainfo_path: &str,
+        download_path: &str,
     ) -> Result<(), ParseError> {
-        match Torrent::new(metainfo_path, download_path) {
+        match Torrent::new(metainfo_path.to_string(), download_path.to_string()) {
             Ok(torrent) => self._add_torrent(torrent),
             Err(err) => Err(err),
         }
@@ -582,7 +611,7 @@ impl Manager {
 
     /// Entry point. Only meant to be called once.
     /// Returns channel for receiving progress updates.
-    pub fn handle(&mut self, port: &'static str) -> mpsc::Receiver<Info> {
+    pub fn handle(&mut self, port: &'static str) -> mpsc::Receiver<InfoMsg> {
         // "127.0.0.1:80"
         let torrents = self.torrents.clone();
 
@@ -631,7 +660,7 @@ struct Controller {
     recv: mpsc::Receiver<NewPeerMsg>,
     torrents: Arc<Mutex<HashMap<hash, Torrent>>>,
     npeers: Arc<AtomicUsize>,
-    send: mpsc::Sender<Info>,
+    send: mpsc::Sender<InfoMsg>,
     peer_priority: PriorityQueue<hash, PeerPriority>,
     peers: HashMap<hash, ManagerComm>,
     bitfields: HashMap<hash, BitVec>,
@@ -642,7 +671,7 @@ impl Controller {
         recv: mpsc::Receiver<NewPeerMsg>,
         torrents: Arc<Mutex<HashMap<hash, Torrent>>>,
         npeers: Arc<AtomicUsize>,
-        send: mpsc::Sender<Info>,
+        send: mpsc::Sender<InfoMsg>,
     ) -> Controller {
         Controller {
             recv: recv,
@@ -658,8 +687,6 @@ impl Controller {
     // TODO: This is a strong candidate to be replaced by a task system;
     // Task: returns Option<Update>
     pub fn run_loop(&mut self) {
-        let max_uploaders = 5;
-
         let start = Instant::now();
         let ten_secs = Duration::from_secs(10);
 
@@ -673,30 +700,35 @@ impl Controller {
             self.check_messages();
 
             // Update choking on 10-sec intervals
-            /*
-            Choke: stop sending to this peer
-            Choking algo (according to Bittorrent spec):
-            - Check every 10 seconds
-            - Unchoke 4 peers for which we have the best download rates (who are interested)
-            - Peer with better download rate becomes interest: choke worst uploader
-            - Maintain one Peer, regardless of download rate
-            */
             if start.elapsed() >= ten_secs {
-                let mut i = 0;
-                for (id, priority) in self.peer_priority.clone().into_sorted_iter() {
-                    let comm = self.peers
-                        .get(&id)
-                        .expect("Peer in priority queue but not comms map");
-                    if i < max_uploaders {
-                        comm.send(ManagerUpdate::Unchoke);
-                    } else {
-                        comm.send(ManagerUpdate::Choke);
-                    }
-                    i = i + 1;
-                }
+                self.choke();
             }
 
             self.make_requests();
+        }
+    }
+
+    /*
+    Choke: stop sending to this peer
+    Choking algo (according to Bittorrent spec):
+    - Check every 10 seconds
+    - Unchoke 4 peers for which we have the best download rates (who are interested)
+    - Peer with better download rate becomes interest: choke worst uploader
+    - Maintain one Peer, regardless of download rate
+    */
+    fn choke(&mut self) {
+        let max_uploaders = 5; // TODO: config
+        let mut i = 0;
+        for (id, priority) in self.peer_priority.clone().into_sorted_iter() {
+            let comm = self.peers
+                .get(&id)
+                .expect("Peer in priority queue but not comms map");
+            if i < max_uploaders {
+                comm.send(ManagerUpdate::Unchoke);
+            } else {
+                comm.send(ManagerUpdate::Choke);
+            }
+            i = i + 1;
         }
     }
 
@@ -722,8 +754,11 @@ impl Controller {
                     }
                     None => {
                         info!("Torrent \"{}\" complete", torrent.name());
-                        self.send
-                            .send(self.create_info(info_hash, torrent, Status::Complete));
+                        self.send.send(InfoMsg::One(self.create_info(
+                            info_hash,
+                            torrent,
+                            Status::Complete,
+                        )));
                         return false;
                     }
                 }
@@ -737,10 +772,10 @@ impl Controller {
         let out = torrents
             .iter_mut()
             .map(|(info_hash, t)| self.create_info(info_hash, t, Status::Running))
-            .map(|info| self.send.send(info))
-            .for_each(|res| {
-                res.map_err(|e| error!("Info update failed with error: {:?}", e));
-            });
+            .collect();
+        self.send
+            .send(InfoMsg::All(out))
+            .map_err(|e| error!("Info update failed with error: {:?}", e));
     }
 
     fn try_recv_new_peer(&mut self) {
@@ -814,10 +849,10 @@ impl Controller {
 mod tests {
     use bittorrent::manager::*;
 
-    fn create_controller(port: &'static str) -> mpsc::Receiver<Info> {
+    fn create_controller(port: &'static str) -> mpsc::Receiver<InfoMsg> {
         let mut manager = Manager::new();
         let receiver = manager.handle(port);
-        manager.add_torrent(::TEST_FILE.to_string(), ::DL_DIR.to_string());
+        manager.add_torrent(::TEST_FILE, ::DL_DIR);
         return receiver;
     }
     /*

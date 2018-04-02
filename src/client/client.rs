@@ -7,6 +7,10 @@ use cursive::views::Counter;
 use cursive_table_view::{TableView, TableViewItem};
 use rand::{thread_rng, Rng};
 use client::table;
+use client::table::AsyncTableView;
+use bittorrent::bittorrent::manager::Manager;
+use std::rc::Rc;
+use std::cell::RefCell;
 
 pub struct Client {
     curs: Cursive,
@@ -47,32 +51,22 @@ fn progress(curs: &Cursive) -> ProgressBar {
 }
 
 pub fn run() {
-    let mut rng = thread_rng();
-    let mut curs = Cursive::new(); /*
-    let mut manager = PeerManager::new();
-    let port = "3000";
-    let recv = manager.handle(port);*/
+    let mut curs = Cursive::new();
 
     curs.add_global_callback('q', |s| s.quit());
 
-    let table = table::new();
-    /*
-    let list = ListView::new().with(|list| {
-        for i in 0..20 {
-            list.add_child(&format!("Torrent {}", i), progress(&curs));
-        }
-    });
+    let mut manager = Rc::new(RefCell::new(Manager::new()));
+    let rx = manager.borrow_mut().handle("3000");
 
-    //let table_container = LinearLayout::horizontal().child(list).child(table);
-    */
+    let async_table = AsyncTableView::new(rx, table::new());
     let actions = LinearLayout::horizontal()
-        .child(Button::new("New", add))
+        .child(Button::new("New", move |_| add(manager.clone())))
         .child(Button::new("Remove", remove))
         .child(DummyView)
         .child(Button::new("Quit", Cursive::quit));
 
     curs.add_layer(
-        Dialog::around(LinearLayout::vertical().child(table).child(actions))
+        Dialog::around(LinearLayout::vertical().child(async_table).child(actions))
             .title("Active Torrents"),
     );
 
@@ -81,8 +75,24 @@ pub fn run() {
     curs.run();
 }
 
-fn add(curs: &mut Cursive) {}
+fn add(mut manager: Rc<RefCell<Manager>>) {
+    manager.borrow_mut().add_torrent(
+        "/path/to/torrent_file.torrent",
+        "/path/to/download/directory",
+    );
+}
 
 fn pause(curs: &mut Cursive) {}
 
 fn remove(curs: &mut Cursive) {}
+
+#[cfg(test)]
+mod tests {
+
+    use client::client::*;
+
+    #[test]
+    fn test_client() {
+        let mut curs = Cursive::new();
+    }
+}
