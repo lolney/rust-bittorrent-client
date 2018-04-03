@@ -11,6 +11,7 @@ use client::table::AsyncTableView;
 use bittorrent::bittorrent::manager::Manager;
 use std::rc::Rc;
 use std::cell::RefCell;
+use cursive::traits::*;
 
 pub struct Client {
     curs: Cursive,
@@ -68,7 +69,7 @@ pub fn run() {
     curs.add_layer(
         Dialog::around(
             LinearLayout::vertical()
-                .child(async_table /*.with_id("table").min_size((50, 20))*/)
+                .child(async_table.with_id("table").min_size((50, 20)))
                 .child(actions),
         ).title("Active Torrents"),
     );
