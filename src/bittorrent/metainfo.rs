@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn test_read_write() {
-        let metainfo = MetaInfo::read("test/bible.torrent".to_string()).unwrap();
+        let metainfo = MetaInfo::read(::TEST_BIBLE.to_string()).unwrap();
         metainfo.write("test/bible-out.torrent".to_string());
         let metainfo2 = MetaInfo::read("test/bible-out.torrent".to_string()).unwrap();
         assert_eq!(metainfo, metainfo2);
@@ -512,5 +512,11 @@ mod tests {
             _ => {}
         }
         assert_eq!(BencodeT::String(string), bstring);
+    }
+
+    #[test]
+    fn test_trackers() {
+        let metainfo = MetaInfo::read(::TEST_FILE.to_string()).unwrap();
+        assert_eq!(metainfo.trackers(), vec!["http://127.0.0.1:3000"]);
     }
 }

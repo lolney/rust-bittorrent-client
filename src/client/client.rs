@@ -66,8 +66,11 @@ pub fn run() {
         .child(Button::new("Quit", Cursive::quit));
 
     curs.add_layer(
-        Dialog::around(LinearLayout::vertical().child(async_table).child(actions))
-            .title("Active Torrents"),
+        Dialog::around(
+            LinearLayout::vertical()
+                .child(async_table /*.with_id("table").min_size((50, 20))*/)
+                .child(actions),
+        ).title("Active Torrents"),
     );
 
     // Starts the event loop.
@@ -85,7 +88,7 @@ fn add(mut manager: Rc<RefCell<Manager>>) {
 fn pause(curs: &mut Cursive) {}
 
 fn remove(curs: &mut Cursive) {}
-
+/*
 #[cfg(test)]
 mod tests {
 
@@ -95,4 +98,4 @@ mod tests {
     fn test_client() {
         let mut curs = Cursive::new();
     }
-}
+}*/

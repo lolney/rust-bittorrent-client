@@ -338,7 +338,7 @@ impl Tracker {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
 
     use bittorrent::tracker::*;
     use bittorrent::bencoder::encode;
@@ -374,6 +374,25 @@ mod tests {
                 peers: make_trackerpeers(20, place(i, 2)),
             })
             .collect()
+    }
+
+    pub fn default_tracker(port: &'static usize) -> Vec<TrackerResponse> {
+        vec![
+            TrackerResponse {
+                warning_message: None,
+                interval: 1,
+                min_interval: Some(1),
+                tracker_id: String::from("xyz"),
+                complete: 10,
+                incomplete: 10,
+                peers: vec![
+                    TrackerPeer::Binary {
+                        ip: "127.0.0.1".to_string(),
+                        port: *port,
+                    },
+                ],
+            },
+        ]
     }
 
     fn serialize_resp(resp: &TrackerResponse) -> BencodeT {
@@ -438,7 +457,10 @@ mod tests {
     }
 
     impl SimpleServer {
-        fn new() -> SimpleServer {
+        fn new<F>(make_resps: F) -> SimpleServer
+        where
+            F: Fn() -> Vec<TrackerResponse>,
+        {
             let responses = make_resps();
             SimpleServer {
                 resp: encode(&serialize_resp(&responses[0])),
@@ -459,12 +481,23 @@ mod tests {
         }
     }
 
+    pub fn run_server<F>(addr: &str, make_resps: &'static F)
+    where
+        F: Fn() -> Vec<TrackerResponse>,
+    {
+        let socket = addr.parse().unwrap();
+        let server = Http::new()
+            .bind(&socket, move || Ok(SimpleServer::new(make_resps)))
+            .unwrap();
+        server.run();
+    }
+
     #[test]
     fn test_tracker() {
         // Make request to tracker
         let peer_id = Peer::gen_peer_id();
         let info_hash = Peer::gen_peer_id();
-        let urls: Vec<String> = vec!["127.0.0.1:3000"]
+        let urls: Vec<String> = vec!["127.0.0.1:4000"]
             .into_iter()
             .map(|s| s.to_string())
             .collect();
@@ -475,10 +508,9 @@ mod tests {
         let mut core = Core::new().unwrap();
 
         // Setup server
-        let addr = urls[0].parse().unwrap();
+        let url = urls[0].clone();
         thread::spawn(move || {
-            let mut server = Http::new().bind(&addr, || Ok(SimpleServer::new())).unwrap();
-            server.run();
+            run_server(&url, &make_resps);
         });
 
         let stream = Tracker::get_peers(

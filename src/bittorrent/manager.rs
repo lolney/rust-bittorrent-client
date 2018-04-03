@@ -382,6 +382,7 @@ impl Manager {
             .clone()
             .expect("Handle not called before adding torrent");
         core.run(stream.for_each(|ips| {
+            info!("Tracker response received with {} ips", ips.len());
             for ip in ips {
                 let channel = channel.clone();
                 let torrents = torrents.clone();
@@ -389,7 +390,7 @@ impl Manager {
                 Manager::connect(TcpStream::connect(ip), torrents, npeers, channel);
             }
             Ok(())
-        }));
+        })).map_err(|e| error!("Error while announcing to tracker: {:?}", e));
         {
             let mut torrents = self.torrents.lock().expect("Torrents mutex poisoned");
             let info_hash = torrent.info_hash();
@@ -612,7 +613,6 @@ impl Manager {
     /// Entry point. Only meant to be called once.
     /// Returns channel for receiving progress updates.
     pub fn handle(&mut self, port: &'static str) -> mpsc::Receiver<InfoMsg> {
-        // "127.0.0.1:80"
         let torrents = self.torrents.clone();
 
         let (manager_send, manager_recv) = mpsc::channel();
@@ -622,19 +622,11 @@ impl Manager {
 
         thread::spawn(move || {
             // listens for incoming connections
-            let listener = TcpListener::bind(port).expect("Failed to bind listening port");
+            let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
+                .expect("Failed to bind listening port");
+            info!("Listening on port {} for new peers", port);
             listener.incoming().for_each(|stream| {
                 let torrents = torrents.clone();
-                /*
-                    - Hashmap for looking up sender for a given peer
-                    - Doesn't need to be sent to connection threads
-                    - Peers must be accessble to the torrent object,
-                    - which decides which peer to request from based
-                    on their download rate
-                    */
-                /*let (p,c) = unsafe { 
-                        bounded_fast::new(10);
-                    };*/
                 Manager::connect(stream, torrents, npeers.clone(), manager_send.clone());
             });
         });
@@ -848,28 +840,47 @@ impl Controller {
 #[cfg(test)]
 mod tests {
     use bittorrent::manager::*;
+    use env_logger;
+    use bittorrent::tracker::tests::{default_tracker, run_server};
+    use bittorrent::tracker::TrackerResponse;
 
-    fn create_controller(port: &'static str) -> mpsc::Receiver<InfoMsg> {
+    fn create_manager(port: &'static str) -> (Manager, mpsc::Receiver<InfoMsg>) {
         let mut manager = Manager::new();
         let receiver = manager.handle(port);
-        manager.add_torrent(::TEST_FILE, ::DL_DIR);
-        return receiver;
+        return (manager, receiver);
     }
-    /*
+
     #[test]
     fn test_send_receive() {
         // TODO: run tracker
+        let _ = env_logger::init();
+        thread::spawn(move || {
+            fn tmp() -> Vec<TrackerResponse> {
+                default_tracker(&1776)
+            }
+            tmp;
+            tests::run_server("127.0.0.1:3000", &tmp);
+        });
 
-        let seeder = create_controller("1776");
-        let leecher = create_controller("1777");
+        let (mut seeder, seeder_rx) = create_manager("1776");
+        let (mut leecher, leecher_rx) = create_manager("1777");
+
+        seeder.add_torrent(::TEST_FILE, ::DL_DIR);
+        seeder.add_torrent(
+            ::TEST_FILE,
+            &format!("{}/{}", ::DL_DIR, "test_send_receive"),
+        );
 
         loop {
-            match leecher.recv() {
-                Info::Complete => return, // TODO: send stop signal
+            match leecher_rx.recv() {
+                Ok(InfoMsg::One(info)) => match info.status {
+                    Status::Complete => return,
+                    _ => (),
+                },
                 _ => (),
             }
         }
-    }*/
+    }
 
     #[test]
     fn test_controller() {

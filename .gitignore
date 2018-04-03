@@ -1,6 +1,5 @@
 *.txt
 /target
-*.torrent
 *.DS_Store
 
 \.vscode/
@@ -10,3 +9,5 @@ test/test/
 test/threadtest
 
 test/threadtest\.rs
+
+test/bible-out\.torrent

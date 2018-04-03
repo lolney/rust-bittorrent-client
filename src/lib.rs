@@ -11,8 +11,10 @@
 
 extern crate bit_vec;
 extern crate byteorder;
+extern crate env_logger;
 #[macro_use]
 extern crate log;
+
 extern crate priority_queue;
 extern crate rand;
 extern crate sha1;
@@ -35,7 +37,8 @@ const REC_SIZE: usize = 2 ^ 14;
 
 const DL_DIR: &'static str = "test/test";
 /// Default test file
-const TEST_FILE: &'static str = "test/bible.torrent";
+const TEST_FILE: &'static str = "test/torrent.torrent";
+const TEST_BIBLE: &'static str = "test/bible.torrent";
 /// Max outstanding requests per torrent
 const REQUESTS_LIMIT: usize = 1;
 const MAX_PEERS: usize = 30;
