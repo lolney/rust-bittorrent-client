@@ -1,6 +1,6 @@
 /* Tracker communication handled here
 */
-use bittorrent::{hash, Bencodable, BencodeT, Keys, ParseError};
+use bittorrent::{Bencodable, BencodeT, Hash, Keys, ParseError};
 use std::net::SocketAddr;
 use bittorrent::peer::{Peer, PeerInfo};
 use bittorrent::bedecoder::parse;
@@ -67,7 +67,7 @@ impl TrackerResponse {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TrackerPeer {
     Dictionary {
-        peer_id: hash,
+        peer_id: Hash,
         ip: String,
         port: usize,
     },
@@ -158,7 +158,7 @@ impl Bencodable for TrackerPeer {
             }
             TrackerPeer::Dictionary { peer_id, ip, port } => {
                 let hm = to_keys!{
-                    (peer_id, hash),
+                    (peer_id, Hash),
                     (ip, String),
                     (port, usize)
                 };
@@ -173,7 +173,7 @@ impl Bencodable for TrackerPeer {
                 TrackerPeer,
                 Dictionary,
                 hm,
-                (peer_id, hash),
+                (peer_id, Hash),
                 (ip, String),
                 (port, usize)
             )),
@@ -195,9 +195,9 @@ impl Serializable for usize {
     }
 }
 
-impl Serializable for [u8] {
+impl Serializable for Hash {
     fn serialize(&self) -> String {
-        form_urlencoded::byte_serialize(self).collect()
+        form_urlencoded::byte_serialize(&self.0).collect()
     }
 }
 
@@ -291,8 +291,8 @@ impl Tracker {
 
     pub fn get_peers(
         handle: Handle,
-        info_hash: hash,
-        peer_id: hash,
+        info_hash: Hash,
+        peer_id: Hash,
         urls: Vec<String>,
     ) -> Result<RequestStream, ParseError> {
         let query_string = serialize!(

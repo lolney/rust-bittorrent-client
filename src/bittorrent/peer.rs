@@ -1,7 +1,7 @@
 use byteorder::BigEndian;
 use byteorder::ByteOrder;
 use bit_vec::BitVec;
-use bittorrent::{hash, ParseError, Piece, PieceData};
+use bittorrent::{Hash, ParseError, Piece, PieceData};
 use std::mem::transmute;
 use rand::Rng;
 use rand;
@@ -133,16 +133,16 @@ impl Peer {
         }
     }
 
-    pub fn info_hash(&self) -> &hash {
+    pub fn info_hash(&self) -> &Hash {
         &self.peer_info.info_hash
     }
 
-    pub fn peer_id(&self) -> &hash {
+    pub fn peer_id(&self) -> &Hash {
         &self.peer_info.peer_id
     }
 
     pub fn peer_id_string(&self) -> String {
-        String::from(from_utf8(&self.peer_info.peer_id).unwrap())
+        String::from(from_utf8(&self.peer_info.peer_id.0).unwrap())
     }
 
     // TODO: these errors should probably be PareErrors
@@ -284,10 +284,10 @@ impl Peer {
         message!(13u32, 8u8, piece.index, piece.begin, piece.length)
     }
 
-    pub fn gen_peer_id() -> hash {
-        let mut id: hash = [0; 20];
+    pub fn gen_peer_id() -> Hash {
+        let mut id: Hash = Hash([0; 20]);
         let mut rng = rand::thread_rng();
-        for x in id.iter_mut() {
+        for x in id.0.iter_mut() {
             *x = rng.gen();
         }
         return id;
@@ -295,7 +295,7 @@ impl Peer {
 
     /// Static method: received before the peer is created
     /// Extracts the torrent and Peer ID from the handshake
-    pub fn parse_handshake(msg: &[u8]) -> Result<(hash, hash), ParseError> {
+    pub fn parse_handshake(msg: &[u8]) -> Result<(Hash, Hash), ParseError> {
         let mut i = 0;
 
         // check message size
@@ -321,18 +321,18 @@ impl Peer {
         }
 
         i = i + 8 + pstrlen as usize;
-        let mut info_hash: hash = Default::default();
-        info_hash.copy_from_slice(&msg[i..i + 20]);
+        let mut info_hash: Hash = Default::default();
+        info_hash.0.copy_from_slice(&msg[i..i + 20]);
 
         i = i + 20;
-        let mut peer_id: hash = Default::default();
-        peer_id.copy_from_slice(&msg[i..i + 20]);
+        let mut peer_id: Hash = Default::default();
+        peer_id.0.copy_from_slice(&msg[i..i + 20]);
 
         return Ok((peer_id, info_hash));
     }
 
     /// Generate the handshake message;
-    pub fn handshake(peer_id: &hash, info_hash: &hash) -> [u8; ::HSLEN] {
+    pub fn handshake(peer_id: &Hash, info_hash: &Hash) -> [u8; ::HSLEN] {
         let mut i = 0;
         let mut msg: [u8; ::HSLEN] = [0; ::HSLEN];
 
@@ -340,9 +340,9 @@ impl Peer {
         i = i + 1;
         msg[i..i + ::PSTRLEN as usize].copy_from_slice(::PSTR.as_bytes());
         i += 8 + ::PSTRLEN as usize;
-        msg[i..i + 20].copy_from_slice(info_hash);
+        msg[i..i + 20].copy_from_slice(&info_hash.0);
         i += 20;
-        msg[i..i + 20].copy_from_slice(peer_id);
+        msg[i..i + 20].copy_from_slice(&peer_id.0);
 
         return msg;
     }
@@ -487,8 +487,8 @@ mod tests {
 
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
-    pub peer_id: hash,
-    pub info_hash: hash,
+    pub peer_id: Hash,
+    pub info_hash: Hash,
     pub ip: String,
     pub port: i64,
 }

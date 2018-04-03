@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use bittorrent::{hash, Bencodable, BencodeT, ParseError};
+use bittorrent::{Bencodable, BencodeT, Hash, ParseError};
 use bittorrent::bencoder::encode;
 use bittorrent::bedecoder::parse;
 use bittorrent::PieceData;
@@ -36,7 +36,7 @@ pub struct MetaInfo {
 #[derive(PartialEq, Debug, Clone)]
 pub struct Info {
     pub piece_length: i64,
-    pub pieces: Vec<hash>, // concatination of all 20-byte SHA-1 hash values
+    pub pieces: Vec<Hash>, // concatination of all 20-byte SHA-1 hash values
     pub private: Option<bool>,
     pub file_info: FileInfo,
 }
@@ -104,10 +104,10 @@ macro_rules! insert_elems_optional {
     }
 }
 
-fn hash(bytes: &[u8]) -> hash {
+fn hash(bytes: &[u8]) -> Hash {
     let mut sha = Sha1::new();
     sha.update(bytes);
-    sha.digest().bytes()
+    Hash(sha.digest().bytes())
 }
 
 /// In to_BencodeT: inserts a vector into the hm, converting elems to BencodeT
@@ -318,7 +318,7 @@ impl Bencodable for MIFile {
 // TODO: error handling when a field isn't present
 // TODO: make sure file/piece lengths line up
 impl MetaInfo {
-    pub fn info_hash(&self) -> hash {
+    pub fn info_hash(&self) -> Hash {
         let bstring = encode(&self.info.to_BencodeT());
         hash(bstring.as_bytes())
     }
@@ -427,28 +427,28 @@ impl Info {
         }
     }
 
-    fn split_hashes(string: String) -> Result<Vec<hash>, ParseError> {
+    fn split_hashes(string: String) -> Result<Vec<Hash>, ParseError> {
         if string.len() % 20 != 0 {
             return Err(ParseError::new_str("pieces string must be multiple of 20"));
         }
 
-        let mut vec = Vec::<hash>::new();
+        let mut vec = Vec::<Hash>::new();
 
         for i in 0..string.len() / 20 {
             let s = i * 20;
             let e = (i + 1) * 20;
-            let mut a: hash = Default::default();
-            a.copy_from_slice(&string.as_bytes()[s..e]);
+            let mut a: Hash = Default::default();
+            a.0.copy_from_slice(&string.as_bytes()[s..e]);
             vec.push(a);
         }
 
         Ok(vec)
     }
 
-    fn hashes_to_string(hashes: &Vec<hash>) -> BencodeT {
+    fn hashes_to_string(hashes: &Vec<Hash>) -> BencodeT {
         let mut vec = Vec::<u8>::new();
         for slice in hashes {
-            vec.extend_from_slice(slice);
+            vec.extend_from_slice(&slice.0);
         }
         return unsafe { BencodeT::String(String::from_utf8_unchecked(vec)) };
     }

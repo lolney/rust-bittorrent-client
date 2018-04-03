@@ -1,6 +1,6 @@
 extern crate core;
 
-use bittorrent::{hash, metainfo, torrent, ParseError, Piece, peer::Action, peer::Peer,
+use bittorrent::{metainfo, torrent, Hash, ParseError, Piece, peer::Action, peer::Peer,
                  peer::PeerInfo, torrent::Torrent, tracker::Tracker};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::time::{Duration, Instant, SystemTime};
@@ -38,8 +38,8 @@ pub struct Manager {
     Must be able to control:
     - Choking/Unchoking
     */
-    torrents: Arc<Mutex<HashMap<hash, Torrent>>>, // u8 is the Info_hash
-    peer_id: hash,                                // our peer id
+    torrents: Arc<Mutex<HashMap<Hash, Torrent>>>, // u8 is the Info_hash
+    peer_id: Hash,                                // our peer id
     npeers: Arc<AtomicUsize>,                     // TODO: can this just be in the controller?
     manager_send: Option<Sender<NewPeerMsg>>,     // Must be initialized when Controller is created
 }
@@ -99,8 +99,8 @@ enum PeerUpdate {
 impl PeerUpdate {
     fn process(
         self,
-        peer_id: &hash,
-        peers: &mut PriorityQueue<hash, PeerPriority>,
+        peer_id: &Hash,
+        peers: &mut PriorityQueue<Hash, PeerPriority>,
         bitfield: &mut BitVec,
     ) -> bool {
         match self {
@@ -152,7 +152,7 @@ pub enum Status {
 
 #[derive(Debug, Clone)]
 pub struct Info {
-    pub info_hash: hash,
+    pub info_hash: Hash,
     pub name: String,
     pub status: Status,
     pub progress: f32,
@@ -185,8 +185,8 @@ impl PartialOrd for Status {
 }
 
 pub struct NewPeerMsg {
-    peer_id: hash,
-    info_hash: hash,
+    peer_id: Hash,
+    info_hash: Hash,
     comm: ManagerComm,
     priority: PeerPriority,
 }
@@ -244,18 +244,23 @@ impl ManagerComm {
     }
 }
 
+enum Handshake {
+    Initiator { peer_id: Hash, info_hash: Hash },
+    Receiver(Hash),
+}
+
 /// Used by the choking manager to determine priority for
 /// choking or requests
 #[derive(Debug, Clone)]
 struct PeerPriority {
-    info_hash: hash,
+    info_hash: Hash,
     peer_interested: bool,
     download_speed: usize,
     peer_choking: bool,
 }
 
 impl PeerPriority {
-    pub fn new(info_hash: hash) -> PeerPriority {
+    pub fn new(info_hash: Hash) -> PeerPriority {
         PeerPriority {
             info_hash: info_hash,
             peer_interested: false,
@@ -333,7 +338,7 @@ impl PartialEq for PeerPriority {
 
 impl Eq for PeerPriority {}
 
-fn remove(pq: &mut PriorityQueue<hash, PeerPriority>, id: &hash) {
+fn remove(pq: &mut PriorityQueue<Hash, PeerPriority>, id: &Hash) {
     pq.change_priority_by(id, |priority| priority.set_max());
     pq.pop();
 }
@@ -381,16 +386,28 @@ impl Manager {
         let channel = self.manager_send
             .clone()
             .expect("Handle not called before adding torrent");
+        let peer_id = self.peer_id;
+
         core.run(stream.for_each(|ips| {
             info!("Tracker response received with {} ips", ips.len());
             for ip in ips {
                 let channel = channel.clone();
                 let torrents = torrents.clone();
                 let npeers = npeers.clone();
-                Manager::connect(TcpStream::connect(ip), torrents, npeers, channel);
+                Manager::connect(
+                    TcpStream::connect(ip),
+                    torrents,
+                    npeers,
+                    channel,
+                    Handshake::Initiator {
+                        peer_id: peer_id.clone(),
+                        info_hash: torrent.info_hash(),
+                    },
+                );
             }
             Ok(())
         })).map_err(|e| error!("Error while announcing to tracker: {:?}", e));
+
         {
             let mut torrents = self.torrents.lock().expect("Torrents mutex poisoned");
             let info_hash = torrent.info_hash();
@@ -401,17 +418,40 @@ impl Manager {
 
     /// Handle incoming clients
     fn handle_client(
-        stream: &TcpStream,
-        torrents: &Arc<Mutex<HashMap<hash, Torrent>>>,
-    ) -> Result<Peer, NetworkError> {
-        let mut buf: [u8; 68] = [0; 68]; // size of handshake: 19 + 49
-                                         // read handshake and create peer
-        match Peer::parse_handshake(&buf) {
-            Ok((peer_id, info_hash)) => {
-                Manager::match_torrent(&info_hash, torrents)?;
+        stream: &mut TcpStream,
+        torrents: &Arc<Mutex<HashMap<Hash, Torrent>>>,
+        handshake: Handshake,
+    ) -> Result<Peer, ParseError> {
+        if let Handshake::Initiator { peer_id, info_hash } = handshake {
+            stream.write(&Peer::handshake(&peer_id, &info_hash));
+        }
+        let mut buf: [u8; ::HSLEN] = [0; ::HSLEN];
+        // read handshake and create peer
+        match stream.read(&mut buf) {
+            Err(e) => Err(ParseError::new_cause(
+                "Error while waiting for handshake",
+                e,
+            )),
+            Ok(n) => {
+                let (their_peer_id, their_info_hash) = Peer::parse_handshake(&buf)?;
+                match handshake {
+                    Handshake::Initiator { peer_id, info_hash } => {
+                        if info_hash != their_info_hash {
+                            return Err(parse_error!(
+                                "Info hash in handshake ({}) does not match expected ({})",
+                                their_info_hash,
+                                info_hash
+                            ));
+                        }
+                    }
+                    Handshake::Receiver(peer_id) => {
+                        Manager::match_torrent(&their_info_hash, torrents)?;
+                        stream.write(&Peer::handshake(&peer_id, &their_info_hash));
+                    }
+                }
                 let info = PeerInfo {
-                    peer_id: peer_id,
-                    info_hash: info_hash,
+                    peer_id: their_peer_id,
+                    info_hash: their_info_hash,
                     ip: stream
                         .peer_addr()
                         .expect("Expected connection to have IP")
@@ -425,22 +465,22 @@ impl Manager {
                 let peer = Peer::new(info);
                 Ok(peer)
             }
-            Err(err) => Err(NetworkError::from(err)),
         }
     }
 
     fn match_torrent(
-        info_hash: &hash,
-        torrents: &Arc<Mutex<HashMap<hash, Torrent>>>,
-    ) -> Result<bool, NetworkError> {
+        info_hash: &Hash,
+        torrents: &Arc<Mutex<HashMap<Hash, Torrent>>>,
+    ) -> Result<bool, ParseError> {
         // Find the matching torrent
         let torrents = torrents.lock().expect("Torrents mutex poisoned");
         if torrents.contains_key(info_hash) {
             return Ok(true);
         }
-        Err(NetworkError {
-            msg: format!("Failed to find torrent with info hash: {:?}", info_hash),
-        })
+        Err(parse_error!(
+            "Failed to find torrent with info hash: {}",
+            info_hash
+        ))
     }
 
     /// Writes to error log and to tcpstream
@@ -448,7 +488,7 @@ impl Manager {
     fn receive(
         mut peer: Peer,
         mut stream: TcpStream,
-        torrents: Arc<Mutex<HashMap<hash, Torrent>>>,
+        torrents: Arc<Mutex<HashMap<Hash, Torrent>>>,
         comm: PeerComm,
     ) {
         let mut buf = [0; ::MSG_SIZE];
@@ -479,7 +519,7 @@ impl Manager {
                                 match torrent.read_block(&req) {
                                     Ok(ref pd) => {
                                         trace!(
-                                            "Reading piece for peer {:?}: {:?}",
+                                            "Reading piece for peer {}: {:?}",
                                             peer.peer_id(),
                                             pd
                                         );
@@ -487,7 +527,7 @@ impl Manager {
                                     }
                                     Err(err) => {
                                         error!(
-                                            "Error while sending block to peer {:?}: {}",
+                                            "Error while sending block to peer {}: {}",
                                             peer.peer_id(),
                                             err
                                         );
@@ -496,14 +536,14 @@ impl Manager {
                             }
                         }
                         Action::Write(piece) => {
-                            trace!("Writing piece from peer {:?}: {:?}", peer.peer_id(), piece);
+                            trace!("Writing piece from peer {}: {:?}", peer.peer_id(), piece);
                             download_size = download_size + piece.piece.length;
                             acquire_torrent_lock!(torrents, peer, torrent);
                             torrent.write_block(&piece);
                         }
                         Action::InterestedChange => {
                             trace!(
-                                "Peer {:?} interested status now: {:?}",
+                                "Peer {} interested status now: {:?}",
                                 peer.peer_id(),
                                 peer.peer_interested
                             );
@@ -519,7 +559,7 @@ impl Manager {
                     },
                     Err(e) => {
                         error!(
-                            "Error while parsing incoming message from peer {:?}: {}",
+                            "Error while parsing incoming message from peer {}: {}",
                             peer.peer_id(),
                             e
                         );
@@ -540,7 +580,7 @@ impl Manager {
                 }
                 ManagerUpdate::Disconnect => {
                     info!(
-                        "Manager has ordered disconnect from peer {:?}",
+                        "Manager has ordered disconnect from peer {}",
                         peer.peer_id()
                     );
                     return;
@@ -574,12 +614,13 @@ impl Manager {
 
     fn connect(
         stream: Result<TcpStream, IOError>,
-        torrents: Arc<Mutex<HashMap<hash, Torrent>>>,
+        torrents: Arc<Mutex<HashMap<Hash, Torrent>>>,
         npeers: Arc<AtomicUsize>,
         manager_send: Sender<NewPeerMsg>,
+        handshake: Handshake,
     ) {
         match stream {
-            Ok(stream) => {
+            Ok(mut stream) => {
                 if npeers.load(AtomicOrdering::SeqCst) >= ::MAX_PEERS {
                     stream.shutdown(Shutdown::Both);
                     warn!(
@@ -587,9 +628,9 @@ impl Manager {
                         ::MAX_PEERS
                     );
                 } else {
-                    match Manager::handle_client(&stream, &torrents) {
+                    match Manager::handle_client(&mut stream, &torrents, handshake) {
                         Ok(peer) => {
-                            info!("New peer connected: {:?}", peer.peer_id());
+                            info!("New peer connected: {}", peer.peer_id());
                             let peer_comm = Manager::register_peer(&peer, npeers, &manager_send);
 
                             thread::spawn(move || {
@@ -619,6 +660,7 @@ impl Manager {
         self.manager_send = Some(manager_send.clone());
 
         let npeers = self.npeers.clone();
+        let peer_id = self.peer_id.clone();
 
         thread::spawn(move || {
             // listens for incoming connections
@@ -627,7 +669,13 @@ impl Manager {
             info!("Listening on port {} for new peers", port);
             listener.incoming().for_each(|stream| {
                 let torrents = torrents.clone();
-                Manager::connect(stream, torrents, npeers.clone(), manager_send.clone());
+                Manager::connect(
+                    stream,
+                    torrents,
+                    npeers.clone(),
+                    manager_send.clone(),
+                    Handshake::Receiver(peer_id),
+                );
             });
         });
 
@@ -650,18 +698,18 @@ macro_rules! torrents {
 
 struct Controller {
     recv: mpsc::Receiver<NewPeerMsg>,
-    torrents: Arc<Mutex<HashMap<hash, Torrent>>>,
+    torrents: Arc<Mutex<HashMap<Hash, Torrent>>>,
     npeers: Arc<AtomicUsize>,
     send: mpsc::Sender<InfoMsg>,
-    peer_priority: PriorityQueue<hash, PeerPriority>,
-    peers: HashMap<hash, ManagerComm>,
-    bitfields: HashMap<hash, BitVec>,
+    peer_priority: PriorityQueue<Hash, PeerPriority>,
+    peers: HashMap<Hash, ManagerComm>,
+    bitfields: HashMap<Hash, BitVec>,
 }
 
 impl Controller {
     pub fn new(
         recv: mpsc::Receiver<NewPeerMsg>,
-        torrents: Arc<Mutex<HashMap<hash, Torrent>>>,
+        torrents: Arc<Mutex<HashMap<Hash, Torrent>>>,
         npeers: Arc<AtomicUsize>,
         send: mpsc::Sender<InfoMsg>,
     ) -> Controller {
@@ -811,9 +859,9 @@ impl Controller {
     /// return true if disconnected; false otherwise
     fn process_queue(
         iter: &mut mpsc::TryIter<PeerUpdate>,
-        peer_id: &hash,
+        peer_id: &Hash,
         bitfield: &mut BitVec,
-        peer_priority: &mut PriorityQueue<hash, PeerPriority>,
+        peer_priority: &mut PriorityQueue<Hash, PeerPriority>,
     ) -> bool {
         match iter.next() {
             Some(msg) => {
@@ -824,7 +872,7 @@ impl Controller {
         }
     }
 
-    fn create_info(&self, info_hash: &hash, torrent: &mut Torrent, status: Status) -> Info {
+    fn create_info(&self, info_hash: &Hash, torrent: &mut Torrent, status: Status) -> Info {
         Info {
             info_hash: info_hash.clone(),
             name: torrent.name().to_string(),
@@ -863,9 +911,9 @@ mod tests {
         });
 
         let (mut seeder, seeder_rx) = create_manager("1776");
-        let (mut leecher, leecher_rx) = create_manager("1777");
-
         seeder.add_torrent(::TEST_FILE, ::DL_DIR);
+
+        let (mut leecher, leecher_rx) = create_manager("1777");
         seeder.add_torrent(
             ::TEST_FILE,
             &format!("{}/{}", ::DL_DIR, "test_send_receive"),

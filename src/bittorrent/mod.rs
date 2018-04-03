@@ -6,6 +6,7 @@ use std::fmt;
 use std::io::Error as IOError;
 use hyper::error::Error as HyperError;
 use hyper::error::UriError;
+use std::default::Default;
 
 /// Describes a decoded benencodable object
 #[derive(PartialEq, Debug, Clone)]
@@ -24,7 +25,39 @@ pub enum ParseError {
     Uri(String, UriError),
 }
 
-pub type hash = [u8; 20];
+#[derive(Hash, Eq, PartialEq, Clone, Debug, Default, Copy)]
+pub struct Hash([u8; 20]);
+
+impl From<[u8; 20]> for Hash {
+    fn from(bytes: [u8; 20]) -> Self {
+        Hash(bytes)
+    }
+}
+
+impl Into<[u8; 20]> for Hash {
+    fn into(self) -> [u8; 20] {
+        self.0
+    }
+}
+
+fn byte_to_nibbles(byte: u8) -> (u8, u8) {
+    let a = byte & 0b00001111;
+    let b = byte >> 4;
+    (b, a)
+}
+
+impl Display for Hash {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let string: String = self.0
+            .iter()
+            .map(|x| {
+                let (b, a) = byte_to_nibbles(*x);
+                format!("{:x}{:x}", b, a)
+            })
+            .collect();
+        write!(f, "{}", string)
+    }
+}
 
 // TODO: this needs an overhaul (boxing errors? using traits?)
 impl ParseError {
@@ -253,19 +286,19 @@ impl Bencodable for String {
     }
 }
 
-impl Bencodable for hash {
+impl Bencodable for Hash {
     fn to_BencodeT(self) -> BencodeT {
-        return unsafe { BencodeT::String(String::from_utf8_unchecked(self.to_vec())) };
+        return unsafe { BencodeT::String(String::from_utf8_unchecked(self.0.to_vec())) };
     }
-    fn from_BencodeT(bencode_t: &BencodeT) -> Result<hash, ParseError> {
+    fn from_BencodeT(bencode_t: &BencodeT) -> Result<Hash, ParseError> {
         match bencode_t {
             &BencodeT::String(ref string) => {
-                let mut a: hash = Default::default();
-                a.copy_from_slice(string.as_bytes());
+                let mut a: Hash = Default::default();
+                a.0.copy_from_slice(string.as_bytes());
                 Ok(a)
             }
             _ => Err(parse_error!(
-                "Attempted to convert non-string BencodeT to hash: {:?}",
+                "Attempted to convert non-string BencodeT to Hash: {:?}",
                 bencode_t
             )),
         }

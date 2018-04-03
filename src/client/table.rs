@@ -13,7 +13,7 @@ use cursive::views::{Dialog, TextView};
 
 use cursive_table_view::{TableColumn, TableView, TableViewItem};
 use bittorrent::bittorrent::manager::{Info, InfoMsg, Manager, Status};
-use bittorrent::bittorrent::hash;
+use bittorrent::bittorrent::Hash as TorrentHash;
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub enum TorrentColumn {
@@ -71,7 +71,7 @@ impl TableViewItem<TorrentColumn> for Info {
 pub struct AsyncTableView<T: TableViewItem<H> + 'static, H: Eq + Hash + Copy + Clone + 'static> {
     rx: Receiver<InfoMsg>,
     table: TableView<T, H>,
-    index_map: HashMap<hash, usize>,
+    index_map: HashMap<TorrentHash, usize>,
 }
 
 impl<T: TableViewItem<H> + 'static, H: Eq + Hash + Copy + Clone + 'static> AsyncTableView<T, H> {
