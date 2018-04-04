@@ -19,7 +19,7 @@ use bittorrent::manager::Manager;
 
 fn main() {
     let mut manager = Manager::new();
-    let rx = manager.handle("3000");
+    let rx = manager.handle();
 
     // The manager publishes updates on this channel
     thread::spawn(move || {

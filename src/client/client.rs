@@ -57,7 +57,7 @@ pub fn run() {
     curs.add_global_callback('q', |s| s.quit());
 
     let mut manager = Rc::new(RefCell::new(Manager::new()));
-    let rx = manager.borrow_mut().handle("3000");
+    let rx = manager.borrow_mut().handle();
 
     let async_table = AsyncTableView::new(rx, table::new());
     let actions = LinearLayout::horizontal()

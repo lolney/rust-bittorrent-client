@@ -294,11 +294,12 @@ impl Tracker {
         info_hash: Hash,
         peer_id: Hash,
         urls: Vec<String>,
+        port: u16,
     ) -> Result<RequestStream, ParseError> {
         let query_string = serialize!(
             ("info_hash", info_hash),
             ("peer_id", peer_id),
-            ("port", ::PORT_NUM),
+            ("port", port.to_string()),
             ("uploaded", 0),
             ("downloaded", 0),
             ("left", 0),
@@ -520,6 +521,7 @@ pub mod tests {
             urls.into_iter()
                 .map(|url| format!("http://{}", url))
                 .collect(),
+            ::PORT_NUM,
         ).unwrap();
 
         let future = stream.for_each(|vec| {

@@ -42,4 +42,4 @@ const TEST_BIBLE: &'static str = "test/bible.torrent";
 /// Max outstanding requests per torrent
 const REQUESTS_LIMIT: usize = 1;
 const MAX_PEERS: usize = 30;
-const PORT_NUM: usize = 6881;
+const PORT_NUM: u16 = 6881;

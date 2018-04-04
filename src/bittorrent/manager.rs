@@ -42,6 +42,7 @@ pub struct Manager {
     peer_id: Hash,                                // our peer id
     npeers: Arc<AtomicUsize>,                     // TODO: can this just be in the controller?
     manager_send: Option<Sender<NewPeerMsg>>,     // Must be initialized when Controller is created
+    port: u16,
 }
 
 #[derive(Debug)]
@@ -350,7 +351,14 @@ impl Manager {
             peer_id: Peer::gen_peer_id(),
             npeers: Arc::new(AtomicUsize::new(0)),
             manager_send: None,
+            port: ::PORT_NUM,
         }
+    }
+
+    /// Used in a builder pattern to set the listening port
+    pub fn port(mut self, port: u16) -> Manager {
+        self.port = port;
+        self
     }
 
     /// Resume torrent from file
@@ -374,12 +382,20 @@ impl Manager {
 
     fn _add_torrent(&mut self, torrent: Torrent) -> Result<(), ParseError> {
         let mut core = Core::new()?;
+        let info_hash = torrent.info_hash();
         let stream = Tracker::get_peers(
             core.handle(),
-            torrent.info_hash(),
+            info_hash,
             self.peer_id,
             torrent.trackers(),
+            self.port.clone(),
         )?;
+
+        {
+            let mut torrents = self.torrents.lock().expect("Torrents mutex poisoned");
+
+            torrents.insert(info_hash, torrent);
+        }
 
         let torrents = self.torrents.clone();
         let npeers = self.npeers.clone();
@@ -387,13 +403,20 @@ impl Manager {
             .clone()
             .expect("Handle not called before adding torrent");
         let peer_id = self.peer_id;
+        let port = self.port;
 
         core.run(stream.for_each(|ips| {
             info!("Tracker response received with {} ips", ips.len());
             for ip in ips {
+                debug!("Received IP address from tracker: {}", ip);
+                if ip.port() == port {
+                    warn!("Avoiding connection with self: {}", port);
+                    continue;
+                }
                 let channel = channel.clone();
                 let torrents = torrents.clone();
                 let npeers = npeers.clone();
+
                 Manager::connect(
                     TcpStream::connect(ip),
                     torrents,
@@ -401,19 +424,15 @@ impl Manager {
                     channel,
                     Handshake::Initiator {
                         peer_id: peer_id.clone(),
-                        info_hash: torrent.info_hash(),
+                        info_hash: info_hash,
                     },
                 );
             }
             Ok(())
-        })).map_err(|e| error!("Error while announcing to tracker: {:?}", e));
-
-        {
-            let mut torrents = self.torrents.lock().expect("Torrents mutex poisoned");
-            let info_hash = torrent.info_hash();
-            torrents.insert(info_hash, torrent);
-        }
-        Ok(())
+        })).map_err(|e| {
+            error!("Error while announcing to tracker: {:?}", e);
+            e
+        })
     }
 
     /// Handle incoming clients
@@ -497,7 +516,9 @@ impl Manager {
                                     // macro for (task, period)
         let ten_secs = Duration::from_secs(10);
 
-        stream.set_read_timeout(Some(Duration::new(::READ_TIMEOUT, 0)));
+        stream
+            .set_read_timeout(Some(Duration::new(::READ_TIMEOUT, 0)))
+            .unwrap_or_else(|e| error!("Failed to set read timeout on stream: {}", e));
 
         loop {
             // match incoming messages from the peer
@@ -653,7 +674,7 @@ impl Manager {
 
     /// Entry point. Only meant to be called once.
     /// Returns channel for receiving progress updates.
-    pub fn handle(&mut self, port: &'static str) -> mpsc::Receiver<InfoMsg> {
+    pub fn handle(&mut self) -> mpsc::Receiver<InfoMsg> {
         let torrents = self.torrents.clone();
 
         let (manager_send, manager_recv) = mpsc::channel();
@@ -661,12 +682,16 @@ impl Manager {
 
         let npeers = self.npeers.clone();
         let peer_id = self.peer_id.clone();
+        let port = self.port.clone();
 
         thread::spawn(move || {
             // listens for incoming connections
             let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
                 .expect("Failed to bind listening port");
-            info!("Listening on port {} for new peers", port);
+            info!(
+                "Listening on port {} for new peers as peer {}",
+                port, peer_id
+            );
             listener.incoming().for_each(|stream| {
                 let torrents = torrents.clone();
                 Manager::connect(
@@ -892,9 +917,9 @@ mod tests {
     use bittorrent::tracker::tests::{default_tracker, run_server};
     use bittorrent::tracker::TrackerResponse;
 
-    fn create_manager(port: &'static str) -> (Manager, mpsc::Receiver<InfoMsg>) {
-        let mut manager = Manager::new();
-        let receiver = manager.handle(port);
+    fn create_manager(port: u16) -> (Manager, mpsc::Receiver<InfoMsg>) {
+        let mut manager = Manager::new().port(port);
+        let receiver = manager.handle();
         return (manager, receiver);
     }
 
@@ -910,11 +935,11 @@ mod tests {
             tests::run_server("127.0.0.1:3000", &tmp);
         });
 
-        let (mut seeder, seeder_rx) = create_manager("1776");
+        let (mut seeder, seeder_rx) = create_manager(1776);
         seeder.add_torrent(::TEST_FILE, ::DL_DIR);
 
-        let (mut leecher, leecher_rx) = create_manager("1777");
-        seeder.add_torrent(
+        let (mut leecher, leecher_rx) = create_manager(1777);
+        leecher.add_torrent(
             ::TEST_FILE,
             &format!("{}/{}", ::DL_DIR, "test_send_receive"),
         );
