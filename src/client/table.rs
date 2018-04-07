@@ -85,7 +85,7 @@ impl<T: TableViewItem<H> + 'static, H: Eq + Hash + Copy + Clone + 'static> Async
 }
 
 impl View for AsyncTableView<Info, TorrentColumn> {
-    fn layout(&mut self, _: Vec2) {
+    fn layout(&mut self, vec2: Vec2) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 InfoMsg::All(vec) => {
@@ -122,6 +122,8 @@ impl View for AsyncTableView<Info, TorrentColumn> {
                 },
             }
         }
+
+        self.table.layout(vec2);
     }
 
     fn draw(&self, printer: &Printer) {

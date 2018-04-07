@@ -925,7 +925,6 @@ mod tests {
 
     #[test]
     fn test_send_receive() {
-        // TODO: run tracker
         let _ = env_logger::init();
         thread::spawn(move || {
             fn tmp() -> Vec<TrackerResponse> {
