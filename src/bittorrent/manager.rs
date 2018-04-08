@@ -30,19 +30,11 @@ use futures::prelude::{async, Future, Sink, Stream};
 /// reads and writes to disk, and sends relevant updates to the Controller.
 
 pub struct Manager {
-    /*
-    This should be a download rate-based PriorityQueue
-    Coordinating thread needs to know:
-    - Download rate
-    - Whether peer is interested
-    Must be able to control:
-    - Choking/Unchoking
-    */
     torrents: Arc<Mutex<HashMap<Hash, Torrent>>>, // u8 is the Info_hash
     peer_id: Hash,                                // our peer id
     npeers: Arc<AtomicUsize>,                     // TODO: can this just be in the controller?
     manager_send: Option<Sender<NewPeerMsg>>,     // Must be initialized when Controller is created
-    port: u16,
+    port: u16,                                    // Port we're listening on
 }
 
 #[derive(Debug)]
@@ -922,7 +914,7 @@ mod tests {
         return (manager, receiver);
     }
 
-    #[test]
+    /*#[test]
     fn test_send_receive() {
         let _ = env_logger::init();
         thread::spawn(move || {
@@ -951,7 +943,7 @@ mod tests {
                 _ => (),
             }
         }
-    }
+    }*/
 
     #[test]
     fn test_controller() {

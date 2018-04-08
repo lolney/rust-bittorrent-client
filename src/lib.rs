@@ -39,7 +39,8 @@ const MSG_SIZE: usize = 2 ^ 16;
 /// Recommended message size
 const REC_SIZE: usize = 2 ^ 14;
 
-const DL_DIR: &'static str = "test/test";
+const DL_DIR: &'static str = "test/test_write";
+const READ_DIR: &'static str = "test/test_read";
 /// Default test file
 const TEST_FILE: &'static str = "test/torrent.torrent";
 const TEST_BIBLE: &'static str = "test/bible.torrent";

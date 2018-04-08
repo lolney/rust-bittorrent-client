@@ -155,6 +155,49 @@ impl Torrent {
         }
     }
 
+    pub fn from_downloaded(infofile: String, download_dir: String) -> Result<Torrent, ParseError> {
+        match MetaInfo::read(infofile) {
+            Ok(metainfo) => {
+                let files = metainfo.info().file_info.as_BTFiles(download_dir);
+                let npieces = metainfo.info().pieces.len();
+                let mut torrent = Torrent {
+                    metainfo: metainfo,
+                    bitfield: BitVec::from_elem(npieces, true),
+                    map: HashMap::new(),
+                    files: files,
+                    piece_queue: PriorityQueue::new(),
+                    outstanding_requests: VecDeque::new(),
+                    dl_rate: Rate::new(),
+                    ul_rate: Rate::new(),
+                };
+                if let Err(e) = torrent.verify_files() {
+                    Err(ParseError::from_parse("Failed to create torrent", e))
+                } else {
+                    Ok(torrent)
+                }
+            }
+            Err(e) => Err(ParseError::from_parse_string(
+                String::from("Error adding torrent"),
+                e,
+            )),
+        }
+    }
+
+    fn verify_files(&mut self) -> Result<(), ParseError> {
+        for i in 0..self.metainfo.info().pieces.len() {
+            let piece = Piece {
+                index: i as u32,
+                begin: 0,
+                length: self.piece_length() as u32,
+            };
+            let piece_data = self.read_block_set_upload(&piece, false)?;
+            if !self.metainfo.info().valid_hash(&piece_data) {
+                return Err(parse_error!("Piece in supplied file is invalid"));
+            }
+        }
+        return Ok(());
+    }
+
     #[inline]
     fn init_queue(npieces: usize) -> PriorityQueue<usize, usize> {
         PriorityQueue::from_iter((0..npieces).map(|i| (i, 0)))
@@ -286,10 +329,20 @@ impl Torrent {
 
     /// Read block after verifying that we have it
     pub fn read_block(&mut self, piece: &Piece) -> Result<PieceData, IOError> {
+        self.read_block_set_upload(piece, true)
+    }
+
+    pub fn read_block_set_upload(
+        &mut self,
+        piece: &Piece,
+        is_upload: bool,
+    ) -> Result<PieceData, IOError> {
         match self.bitfield.get(piece.index as usize) {
             Some(have) => {
                 if have || self.have_block(piece) {
-                    self.ul_rate.update(piece.length as usize);
+                    if is_upload {
+                        self.ul_rate.update(piece.length as usize);
+                    }
                     self.read_block_raw(piece)
                 } else {
                     Err(IOError::new(
@@ -533,6 +586,21 @@ mod tests {
     use bittorrent::{Piece, metainfo::BTFile};
     use bittorrent::utils::gen_random_bytes;
     use std::path::PathBuf;
+
+    #[test]
+    fn test_from_downloaded() {
+        let res = Torrent::from_downloaded(
+            ::TEST_FILE.to_string(),
+            format!("{}/{}", ::READ_DIR, "invalid_torrent"),
+        );
+        assert!(res.is_err());
+
+        let res = Torrent::from_downloaded(
+            ::TEST_FILE.to_string(),
+            format!("{}/{}", ::READ_DIR, "torrent"),
+        );
+        assert!(res.is_ok());
+    }
 
     #[test]
     fn test_in_range() {
