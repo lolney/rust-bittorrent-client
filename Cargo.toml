@@ -18,6 +18,8 @@ url = "1.7.0"
 cursive = { version = "0.7", default-features = false }
 cursive_table_view = "0.4.2"
 futures-await = "0.1"
+serde = "1.0.3"
+serde_derive = "1.0"
 
 [lib]
 name = "bittorrent"

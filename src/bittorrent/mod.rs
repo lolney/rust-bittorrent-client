@@ -7,6 +7,7 @@ use std::io::Error as IOError;
 use hyper::error::Error as HyperError;
 use hyper::error::UriError;
 use std::default::Default;
+use serde::{Deserialize, Serialize};
 
 /// Describes a decoded benencodable object
 #[derive(PartialEq, Debug, Clone)]
@@ -25,7 +26,7 @@ pub enum ParseError {
     Uri(String, UriError),
 }
 
-#[derive(Hash, Eq, PartialEq, Clone, Debug, Default, Copy)]
+#[derive(Hash, Eq, PartialEq, Clone, Debug, Default, Copy, Serialize, Deserialize)]
 pub struct Hash([u8; 20]);
 
 impl From<[u8; 20]> for Hash {

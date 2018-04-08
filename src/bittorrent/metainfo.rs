@@ -11,6 +11,7 @@ use sha1::Sha1;
 use std::str;
 use std::error::Error;
 use std::io::Error as IOError;
+use serde::{Deserialize, Serialize};
 
 /*
 Ideally the methods in this file would use a macro that enumerated the fields
@@ -21,7 +22,7 @@ so you can't implement from_BencodeT for each subtype
 
 /// MetaInfo: Representation of a .torrent file,
 /// containing hashes of all pieces and other metadata
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct MetaInfo {
     info: Info,
     announce: Option<String>,
@@ -33,7 +34,7 @@ pub struct MetaInfo {
 }
 
 /// Common traits to single- and multi- fileinfo
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct Info {
     pub piece_length: i64,
     pub pieces: Vec<Hash>, // concatination of all 20-byte SHA-1 hash values
@@ -41,7 +42,7 @@ pub struct Info {
     pub file_info: FileInfo,
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub enum FileInfo {
     SingleFileInfo {
         name: String,
@@ -55,7 +56,7 @@ pub enum FileInfo {
 }
 
 /// Component of a multi-file info
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct MIFile {
     pub length: i64,
     pub md5sum: Option<String>,
@@ -63,7 +64,7 @@ pub struct MIFile {
 }
 
 /// Generalized MIFile for external use
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct BTFile {
     pub length: i64,
     pub md5sum: Option<String>,

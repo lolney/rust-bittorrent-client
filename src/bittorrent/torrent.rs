@@ -12,6 +12,8 @@ use std::path::PathBuf;
 use priority_queue::PriorityQueue;
 use std::time::{Duration, Instant};
 use std::iter::FromIterator;
+use serde::ser::{Serialize, SerializeSeq, Serializer};
+use serde::de::{Deserialize, Deserializer};
 
 /* Need to:
 - Maintain file access to downloading/uploading data; 
@@ -23,18 +25,43 @@ Pieces are treated as part of a single file,
 so also need to abstract away file boundaries
 */
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 /// Represents a downloading torrent and assoicated file operations
 pub struct Torrent {
     metainfo: MetaInfo,
-    bitfield: BitVec,
+    #[serde(deserialize_with = "deserialize_from_bytes")]
+    #[serde(serialize_with = "serialize_to_bytes")]
+    bitfield: BitVec, // pieces we've downloaded
     map: HashMap<u32, Vec<DLMarker>>, // Piece indices -> indices indicated downloaded parts
-    files: Vec<BTFile>,
-    pub nrequests: usize,
+    files: Vec<BTFile>,               // contains path (possibly renamed from metainfo) info
+
+    // Runtime info:
+    #[serde(skip)]
     piece_queue: PriorityQueue<usize, usize>, // index -> rarity
-    outstanding_requests: VecDeque<Request>,
+
+    #[serde(skip)]
+    outstanding_requests: VecDeque<Request>, // Requests that have been made, but not fullfilled
+
+    #[serde(skip)]
     dl_rate: Rate,
+
+    #[serde(skip)]
     ul_rate: Rate,
+}
+
+fn serialize_to_bytes<S>(bv: &BitVec, s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    s.serialize_bytes(&bv.to_bytes())
+}
+
+fn deserialize_from_bytes<'de, D>(deserializer: D) -> Result<BitVec, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: Vec<u8> = Deserialize::deserialize(deserializer)?;
+    Ok(BitVec::from_bytes(&s))
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -50,7 +77,7 @@ struct Request {
     time: Instant,
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Deserialize, Serialize)]
 enum DLMarker {
     Begin(u32),
     End(u32),
@@ -73,10 +100,7 @@ struct Rate {
 
 impl Rate {
     pub fn new() -> Rate {
-        Rate {
-            total: 0,
-            buffer: VecDeque::new(),
-        }
+        Rate::default()
     }
 
     fn prune(&mut self) {
@@ -98,6 +122,15 @@ impl Rate {
     }
 }
 
+impl Default for Rate {
+    fn default() -> Self {
+        Rate {
+            total: 0,
+            buffer: VecDeque::new(),
+        }
+    }
+}
+
 impl Torrent {
     pub fn new(infofile: String, download_dir: String) -> Result<Torrent, ParseError> {
         match MetaInfo::read(infofile) {
@@ -109,7 +142,6 @@ impl Torrent {
                     bitfield: BitVec::from_elem(npieces, false),
                     map: HashMap::new(),
                     files: files,
-                    nrequests: 0,
                     piece_queue: Torrent::init_queue(npieces),
                     outstanding_requests: VecDeque::new(),
                     dl_rate: Rate::new(),
@@ -140,6 +172,10 @@ impl Torrent {
         self.metainfo.info().piece_length
     }
 
+    pub fn nrequests(&self) -> usize {
+        self.outstanding_requests.len()
+    }
+
     /// Returns number of bytes downloaded
     pub fn downloaded(&self) -> usize {
         self.bitfield.iter().filter(|x| *x).count() * self.piece_length() as usize
@@ -158,12 +194,7 @@ impl Torrent {
         self.ul_rate.rate()
     }
 
-    pub fn inc_nrequests(&mut self) {
-        self.nrequests = self.nrequests + 1;
-    }
-
     fn remove_request(&mut self, piece_data: &PieceData) {
-        self.nrequests = self.nrequests - 1;
         self.outstanding_requests
             .retain(|req| req.piece != piece_data.piece);
     }

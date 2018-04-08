@@ -805,11 +805,10 @@ impl Controller {
                 .filter(|&(k, v)| !v.peer_choking && v.info_hash == *info_hash);
             let mut peer = peers_iter.next();
 
-            while peer.is_some() && torrent.nrequests < ::REQUESTS_LIMIT {
+            while peer.is_some() && torrent.nrequests() < ::REQUESTS_LIMIT {
                 match torrent.select_piece() {
                     Some(piece) => {
                         // Request piece
-                        torrent.inc_nrequests();
                         let (id, v) = peer.unwrap();
                         let comm = self.peers
                             .get(id)
