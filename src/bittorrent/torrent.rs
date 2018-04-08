@@ -37,7 +37,7 @@ pub struct Torrent {
 
     // Runtime info:
     #[serde(skip)]
-    piece_queue: PriorityQueue<usize, usize>, // index -> rarity
+    piece_queue: PriorityQueue<usize, isize>, // index -> rarity
 
     #[serde(skip)]
     outstanding_requests: VecDeque<Request>, // Requests that have been made, but not fullfilled
@@ -194,7 +194,7 @@ impl Torrent {
     }
 
     #[inline]
-    fn init_queue(npieces: usize) -> PriorityQueue<usize, usize> {
+    fn init_queue(npieces: usize) -> PriorityQueue<usize, isize> {
         PriorityQueue::from_iter((0..npieces).map(|i| (i, 0)))
     }
 
@@ -272,8 +272,11 @@ impl Torrent {
         }
     }
 
-    pub fn update_priority(&mut self, piece: &usize, d_npeers: usize) {
-        self.piece_queue.change_priority_by(piece, |n| n - d_npeers);
+    /// `d_npeers`: change in number of peers holding that piece
+    /// An increase in peers decreases the priority
+    pub fn update_priority(&mut self, piece_index: usize, d_npeers: isize) {
+        self.piece_queue
+            .change_priority_by(&piece_index, |n| n - d_npeers);
     }
 
     /// For each of the files specified in the torrent file, create it and parent directories
@@ -734,8 +737,8 @@ mod tests {
 
     #[test]
     fn test_create_files() {
-        remove_dir_all(PathBuf::from(::DL_DIR));
-        let download_dir = String::from(::DL_DIR);
+        let download_dir = format!("{}/{}", ::DL_DIR, "test_create_files");
+        remove_dir_all(PathBuf::from(download_dir.clone()));
         let mut fnames = vec!["test/torrent.torrent", ::TEST_FILE];
         let test_files = fnames
             .iter_mut()

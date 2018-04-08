@@ -24,6 +24,7 @@ pub enum Action {
     Request(Vec<Piece>),
     Write(PieceData),
     InterestedChange,
+    ChokingChange,
     Have(u32),
     Bitfield(BitVec),
     None,
@@ -89,9 +90,11 @@ macro_rules! message_calc_length {
     };
 }
 
-/// Maintains its own request queue
-/// Outsources actual networking
 /// Contains methods for parsing and sending relevant P2P messages
+/// If message contains new information to be acted on, the parse_ method returns an action
+/// Actions reflect actual changes in state - if, e.g., duplicate messages are received,
+/// calls to `parse_` after the first one should return Action::None
+/// Maintains its own request queue
 impl Peer {
     // TODO: errors for lengths larger than the allowed size
     pub fn new(info: PeerInfo) -> Peer {
@@ -147,13 +150,21 @@ impl Peer {
 
     // TODO: these errors should probably be PareErrors
     pub fn parse_choke(&mut self, choke: bool) -> Result<Action, &'static str> {
-        self.peer_choking = choke;
-        Ok(Action::None)
+        if self.peer_choking == choke {
+            Ok(Action::None)
+        } else {
+            self.peer_choking = choke;
+            Ok(Action::ChokingChange)
+        }
     }
 
     pub fn parse_interested(&mut self, interested: bool) -> Result<Action, &'static str> {
-        self.peer_interested = interested;
-        Ok(Action::InterestedChange)
+        if self.peer_interested == interested {
+            Ok(Action::None)
+        } else {
+            self.peer_interested = interested;
+            Ok(Action::InterestedChange)
+        }
     }
 
     pub fn parse_have(&mut self, piece_index: u32) -> Result<Action, &'static str> {
@@ -163,8 +174,12 @@ impl Peer {
         if piece_index as usize >= self.bitfield.len() {
             return Err("Received have message with piece index that exceeds number of pieces");
         }
-        self.bitfield.set(piece_index as usize, true);
-        Ok(Action::Have(piece_index))
+        if self.bitfield[piece_index as usize] {
+            Ok(Action::None)
+        } else {
+            self.bitfield.set(piece_index as usize, true);
+            Ok(Action::Have(piece_index))
+        }
     }
 
     pub fn parse_bitfield(&mut self, bitfield: &[u8]) -> Result<Action, &'static str> {

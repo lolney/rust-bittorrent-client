@@ -110,6 +110,7 @@ impl PeerUpdate {
                 false
             }
             PeerUpdate::Have(piece_index) => {
+                // update priority by 1
                 bitfield.set(piece_index as usize, true);
                 false
             }
@@ -123,7 +124,10 @@ impl PeerUpdate {
                 }
                 false
             }
-            PeerUpdate::Disconnect => true,
+            PeerUpdate::Disconnect => {
+                // for each field in bitfield, update_priority by -1
+                true
+            }
         }
     }
 }
@@ -360,14 +364,30 @@ impl Manager {
         unimplemented!();
     }
 
-    /// Add a new torrent from file `metainfo_path`, downloading
+    /// Add a completed torrent specified by file `metainfo_path`,
+    /// where the file/directory mentioned in that file is present in `download_path`
+    pub fn add_completed_torrent(
+        &mut self,
+        metainfo_path: &str,
+        download_path: &str,
+    ) -> Result<(), ParseError> {
+        match Torrent::from_downloaded(metainfo_path, download_path) {
+            Ok(torrent) => self._add_torrent(torrent),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Add a new torrent from file `metainfo_path`, downloading to `download_path`
     pub fn add_torrent(
         &mut self,
         metainfo_path: &str,
         download_path: &str,
     ) -> Result<(), ParseError> {
         match Torrent::new(metainfo_path, download_path) {
-            Ok(torrent) => self._add_torrent(torrent),
+            Ok(torrent) => {
+                torrent.create_files()?;
+                self._add_torrent(torrent)
+            }
             Err(err) => Err(err),
         }
     }
@@ -518,6 +538,13 @@ impl Manager {
                 Err(e) => {
                     match e.kind() {
                         ErrorKind::WouldBlock => {
+                            acquire_torrent_lock!(torrents, peer, torrent);
+                            for (i, has) in peer.bitfield.iter().enumerate() {
+                                if has {
+                                    torrent.update_priority(i, -1);
+                                }
+                            }
+                            // for each field in bitfield, update_priority by -1
                             comm.send(PeerUpdate::Disconnect);
                             return;
                         } // timeout
@@ -562,7 +589,12 @@ impl Manager {
                             );
                             comm.send(PeerUpdate::InterestedChange);
                         }
+                        Action::ChokingChange => {
+                            comm.send(PeerUpdate::ChokingChange);
+                        }
                         Action::Have(index) => {
+                            acquire_torrent_lock!(torrents, peer, torrent);
+                            torrent.update_priority(index as usize, 1);
                             comm.send(PeerUpdate::Have(index));
                         }
                         Action::Bitfield(bitfield) => {
@@ -776,7 +808,7 @@ impl Controller {
     fn choke(&mut self) {
         let max_uploaders = 5; // TODO: config
         let mut i = 0;
-        for (id, priority) in self.peer_priority.clone().into_sorted_iter() {
+        for (id, _priority) in self.peer_priority.clone().into_sorted_iter() {
             let comm = self.peers
                 .get(&id)
                 .expect("Peer in priority queue but not comms map");
@@ -792,6 +824,7 @@ impl Controller {
     fn make_requests(&mut self) {
         let mut torrents = torrents!(self);
         torrents.retain(|info_hash, ref mut torrent: &mut Torrent| {
+            // Select eligible peers
             let mut peers_iter = self.peer_priority
                 .iter()
                 .filter(|&(k, v)| !v.peer_choking && v.info_hash == *info_hash);
@@ -806,6 +839,7 @@ impl Controller {
                             .get(id)
                             .expect("Peer in priority queue but not comms map");
                         comm.send(ManagerUpdate::Request(Peer::request(&piece)));
+                        trace!("Requesting piece {:?} from peer {}", piece, id);
                         peer = peers_iter.next();
                     }
                     None => {
@@ -914,7 +948,7 @@ mod tests {
         return (manager, receiver);
     }
 
-    /*#[test]
+    #[test]
     fn test_send_receive() {
         let _ = env_logger::init();
         thread::spawn(move || {
@@ -926,7 +960,7 @@ mod tests {
         });
 
         let (mut seeder, seeder_rx) = create_manager(1776);
-        seeder.add_torrent(::TEST_FILE, ::DL_DIR);
+        seeder.add_completed_torrent(::TEST_FILE, &format!("{}/{}", ::READ_DIR, "valid_torrent"));
 
         let (mut leecher, leecher_rx) = create_manager(1777);
         leecher.add_torrent(
@@ -943,10 +977,21 @@ mod tests {
                 _ => (),
             }
         }
-    }*/
+    }
+
+    fn gen_peer(port: usize, info_hash: Hash) -> Peer {
+        Peer::new(PeerInfo {
+            peer_id: Peer::gen_peer_id(),
+            info_hash: info_hash,
+            ip: "127.0.0.1".to_string(),
+            port: port,
+        })
+    }
 
     #[test]
-    fn test_controller() {
+    fn test_peer_updates() {
+        /* begin setup */
+
         // Create controller
         let (manager_send, manager_recv) = mpsc::channel();
         let torrents = Arc::new(Mutex::new(HashMap::new()));
@@ -961,12 +1006,7 @@ mod tests {
         let npieces = torrent.npieces();
 
         // Simulate new peer
-        let peer = Peer::new(PeerInfo {
-            peer_id: Peer::gen_peer_id(),
-            info_hash: torrent.info_hash(),
-            ip: "127.0.0.1".to_string(),
-            port: 3001,
-        });
+        let peer = gen_peer(3001, torrent.info_hash());
         let peer_comm = Manager::register_peer(&peer, npeers.clone(), &manager_send);
 
         {
@@ -977,6 +1017,7 @@ mod tests {
         controller.try_recv_new_peer();
         assert_eq!(controller.peer_priority.len(), 1);
         assert_eq!(controller.peers.len(), 1);
+        /* end setup */
 
         // Send peer updates
         peer_comm.send(PeerUpdate::DownloadSpeed(100));
@@ -1009,6 +1050,17 @@ mod tests {
         assert_eq!(controller.peers.len(), 0);
     }
 
-    // Tests for worker?
+    fn test_worker() {}
+
+    fn test_send_requests() {
+        // Connect some peers
+        // Some of those peers stop choking
+        // Make sure those peers get requests
+    }
+
+    fn test_update_priority() {
+        // Try receiving some `have`s and getting some disconnects with simulated peer
+        // Make sure priority is updated
+    }
 
 }
