@@ -132,18 +132,17 @@ impl Default for Rate {
 }
 
 impl Torrent {
-    pub fn new(infofile: String, download_dir: String) -> Result<Torrent, ParseError> {
+    fn _new(infofile: &str, download_dir: &str) -> Result<Torrent, ParseError> {
         match MetaInfo::read(infofile) {
             Ok(metainfo) => {
                 let files = metainfo.info().file_info.as_BTFiles(download_dir);
-                let npieces = metainfo.info().pieces.len();
                 Ok(Torrent {
                     metainfo: metainfo,
-                    bitfield: BitVec::from_elem(npieces, false),
-                    map: HashMap::new(),
+                    bitfield: Default::default(),
+                    map: Default::default(),
                     files: files,
-                    piece_queue: Torrent::init_queue(npieces),
-                    outstanding_requests: VecDeque::new(),
+                    piece_queue: Default::default(),
+                    outstanding_requests: Default::default(),
                     dl_rate: Rate::new(),
                     ul_rate: Rate::new(),
                 })
@@ -155,43 +154,39 @@ impl Torrent {
         }
     }
 
-    pub fn from_downloaded(infofile: String, download_dir: String) -> Result<Torrent, ParseError> {
-        match MetaInfo::read(infofile) {
-            Ok(metainfo) => {
-                let files = metainfo.info().file_info.as_BTFiles(download_dir);
-                let npieces = metainfo.info().pieces.len();
-                let mut torrent = Torrent {
-                    metainfo: metainfo,
-                    bitfield: BitVec::from_elem(npieces, true),
-                    map: HashMap::new(),
-                    files: files,
-                    piece_queue: PriorityQueue::new(),
-                    outstanding_requests: VecDeque::new(),
-                    dl_rate: Rate::new(),
-                    ul_rate: Rate::new(),
-                };
-                if let Err(e) = torrent.verify_files() {
-                    Err(ParseError::from_parse("Failed to create torrent", e))
-                } else {
-                    Ok(torrent)
-                }
-            }
-            Err(e) => Err(ParseError::from_parse_string(
-                String::from("Error adding torrent"),
-                e,
-            )),
+    pub fn new(infofile: &str, download_dir: &str) -> Result<Torrent, ParseError> {
+        let mut torrent = Torrent::_new(infofile, download_dir)?;
+        let npieces = torrent.metainfo.npieces();
+        torrent.bitfield = BitVec::from_elem(npieces as usize, false);
+        torrent.piece_queue = Torrent::init_queue(npieces as usize);
+        return Ok(torrent);
+    }
+
+    pub fn from_downloaded(infofile: &str, download_dir: &str) -> Result<Torrent, ParseError> {
+        let mut torrent = Torrent::_new(infofile, download_dir)?;
+        let npieces = torrent.metainfo.npieces();
+        torrent.bitfield = BitVec::from_elem(npieces as usize, true);
+        if let Err(e) = torrent.verify_files() {
+            Err(ParseError::from_parse("Failed to create torrent", e))
+        } else {
+            Ok(torrent)
         }
     }
 
     fn verify_files(&mut self) -> Result<(), ParseError> {
-        for i in 0..self.metainfo.info().pieces.len() {
+        let n = self.metainfo.npieces();
+        for i in 0..n {
             let piece = Piece {
                 index: i as u32,
                 begin: 0,
-                length: self.piece_length() as u32,
+                length: if i == n - 1 {
+                    self.metainfo.last_piece_length()
+                } else {
+                    self.piece_length() as u32
+                },
             };
             let piece_data = self.read_block_set_upload(&piece, false)?;
-            if !self.metainfo.info().valid_hash(&piece_data) {
+            if !self.metainfo.valid_piece(&piece_data) {
                 return Err(parse_error!("Piece in supplied file is invalid"));
             }
         }
@@ -226,7 +221,7 @@ impl Torrent {
 
     /// Returns the total size in bytes of the torrent
     pub fn size(&self) -> usize {
-        self.piece_length() as usize * self.metainfo.info().pieces.len()
+        self.piece_length() as usize * self.metainfo.npieces() as usize
     }
 
     pub fn download_rate(&mut self) -> usize {
@@ -295,7 +290,7 @@ impl Torrent {
     /// Write block after verifying that hash is correct
     pub fn write_block(&mut self, piece: &PieceData) -> Result<(), IOError> {
         self.remove_request(piece);
-        if self.metainfo.info().valid_hash(piece) {
+        if self.metainfo.valid_piece(piece) {
             self.dl_rate.update(piece.piece.length as usize);
             self.write_block_raw(piece)
         } else {
@@ -533,7 +528,8 @@ impl Torrent {
             if remaining == 0 {
                 break;
             }
-            file = iter.next().unwrap();
+            file = iter.next()
+                .expect("Piece length requested was longer than expected");
         }
 
         return vec;
@@ -589,24 +585,22 @@ mod tests {
 
     #[test]
     fn test_from_downloaded() {
-        let res = Torrent::from_downloaded(
-            ::TEST_FILE.to_string(),
-            format!("{}/{}", ::READ_DIR, "invalid_torrent"),
-        );
-        assert!(res.is_err());
+        let res =
+            Torrent::from_downloaded(::TEST_FILE, &format!("{}/{}", ::READ_DIR, "valid_torrent"));
+        assert!(res.is_ok());
 
         let res = Torrent::from_downloaded(
-            ::TEST_FILE.to_string(),
-            format!("{}/{}", ::READ_DIR, "torrent"),
+            ::TEST_FILE,
+            &format!("{}/{}", ::READ_DIR, "invalid_torrent"),
         );
-        assert!(res.is_ok());
+        assert!(res.is_err());
     }
 
     #[test]
     fn test_in_range() {
         let p = make_pieces();
 
-        let mut torrent = Torrent::new(::TEST_FILE.to_string(), String::new()).unwrap();
+        let mut torrent = Torrent::new(::TEST_FILE, "").unwrap();
 
         for b in p.iter() {
             assert!(!torrent.have_block(&b));
@@ -646,7 +640,7 @@ mod tests {
 
         let p = make_pieces();
 
-        let mut torrent = Torrent::new(::TEST_FILE.to_string(), String::new()).unwrap();
+        let mut torrent = Torrent::new(::TEST_FILE, "").unwrap();
 
         torrent.insert_piece(&p[1]);
         torrent.insert_piece(&p[7]);
@@ -685,7 +679,7 @@ mod tests {
 
     #[test]
     fn test_map_files() {
-        let mut torrent = Torrent::new(::TEST_FILE.to_string(), String::new()).unwrap();
+        let mut torrent = Torrent::new(::TEST_FILE, "").unwrap();
         let piece_length: u32 = torrent.metainfo.info().piece_length as u32;
         let piece0 = Piece {
             index: 0,
@@ -745,7 +739,7 @@ mod tests {
         let mut fnames = vec!["test/torrent.torrent", ::TEST_FILE];
         let test_files = fnames
             .iter_mut()
-            .map(|x| Torrent::new(x.to_string(), download_dir.clone()).unwrap());
+            .map(|x| Torrent::new(x, &download_dir).unwrap());
         for mut torrent in test_files {
             torrent.create_files().unwrap();
             test_read_write_torrent(&mut torrent);

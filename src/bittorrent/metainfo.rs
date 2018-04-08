@@ -196,6 +196,20 @@ impl FileInfo {
         }
     }
 
+    pub fn total_size(&self) -> usize {
+        match self {
+            &FileInfo::SingleFileInfo {
+                ref name,
+                length,
+                ref md5sum,
+            } => length as usize,
+            &FileInfo::MultiFileInfo {
+                ref name,
+                ref files,
+            } => files.iter().fold(0, |sum, file| sum + file.length as usize),
+        }
+    }
+
     pub fn from_BencodeT(hm: &HashMap<String, BencodeT>) -> Result<FileInfo, ParseError> {
         let name = String::from_BencodeT(hm.get("name").unwrap())?;
         match hm.get("length") {
@@ -243,7 +257,7 @@ impl FileInfo {
         }
     }
 
-    pub fn as_BTFiles(&self, root_directory: String) -> Vec<BTFile> {
+    pub fn as_BTFiles(&self, root_directory: &str) -> Vec<BTFile> {
         let mut vec = Vec::new();
         let root = PathBuf::from(root_directory);
 
@@ -328,6 +342,19 @@ impl MetaInfo {
         &self.info
     }
 
+    pub fn npieces(&self) -> u32 {
+        self.info().pieces.len() as u32
+    }
+
+    pub fn total_size(&self) -> usize {
+        self.info().file_info.total_size()
+    }
+
+    pub fn last_piece_length(&self) -> u32 {
+        (self.total_size() - ((self.npieces() - 1) as usize * self.info().piece_length as usize))
+            as u32
+    }
+
     pub fn trackers(&self) -> Vec<String> {
         if self.announce_list.is_some() {
             return self.announce_list.clone().unwrap();
@@ -337,12 +364,27 @@ impl MetaInfo {
         panic!("Metainfo contains neither announce nor anounce-list");
     }
 
+    /// Return true if piece data hash is valid
+    pub fn valid_piece(&self, piece: &PieceData) -> bool {
+        if piece.piece.index >= self.npieces() {
+            false
+        } else if piece.piece.index == self.npieces() - 1
+            && piece.piece.length != self.last_piece_length()
+        {
+            false
+        } else if hash(piece.data.as_slice()) != self.info().pieces[piece.piece.index as usize] {
+            false
+        } else {
+            true
+        }
+    }
+
     /// Create a torrent file from the given paths
     pub fn create(files: Vec<PathBuf>) -> Result<(), ParseError> {
         unimplemented!();
     }
 
-    pub fn read(infile: String) -> Result<MetaInfo, ParseError> {
+    pub fn read(infile: &str) -> Result<MetaInfo, ParseError> {
         let file = File::open(infile)?;
         let mut buf_reader = BufReader::new(file);
         let mut contents = Vec::new();
@@ -354,7 +396,7 @@ impl MetaInfo {
         }
     }
 
-    pub fn write(&self, outfile: String) -> Result<(), IOError> {
+    pub fn write(&self, outfile: &str) -> Result<(), IOError> {
         let bencodet = self.to_BencodeT();
         let bencoded = encode(&bencodet);
         let mut file = File::create(&outfile)?;
@@ -468,17 +510,6 @@ impl Info {
 
         BencodeT::Dictionary(hm)
     }
-
-    /// Return true if piece data hash is valid
-    pub fn valid_hash(&self, piece: &PieceData) -> bool {
-        if piece.piece.index as usize >= self.pieces.len() {
-            false
-        } else if hash(piece.data.as_slice()) != self.pieces[piece.piece.index as usize] {
-            false
-        } else {
-            true
-        }
-    }
 }
 
 #[cfg(test)]
@@ -489,9 +520,9 @@ mod tests {
 
     #[test]
     fn test_read_write() {
-        let metainfo = MetaInfo::read(::TEST_BIBLE.to_string()).unwrap();
-        metainfo.write("test/bible-out.torrent".to_string());
-        let metainfo2 = MetaInfo::read("test/bible-out.torrent".to_string()).unwrap();
+        let metainfo = MetaInfo::read(::TEST_BIBLE).unwrap();
+        metainfo.write("test/bible-out.torrent");
+        let metainfo2 = MetaInfo::read("test/bible-out.torrent").unwrap();
         assert_eq!(metainfo, metainfo2);
     }
 
@@ -517,7 +548,7 @@ mod tests {
 
     #[test]
     fn test_trackers() {
-        let metainfo = MetaInfo::read(::TEST_FILE.to_string()).unwrap();
+        let metainfo = MetaInfo::read(::TEST_FILE).unwrap();
         assert_eq!(metainfo.trackers(), vec!["http://127.0.0.1:3000"]);
     }
 }

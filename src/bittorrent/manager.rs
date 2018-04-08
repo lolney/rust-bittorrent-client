@@ -366,7 +366,7 @@ impl Manager {
         metainfo_path: &str,
         download_path: &str,
     ) -> Result<(), ParseError> {
-        match Torrent::new(metainfo_path.to_string(), download_path.to_string()) {
+        match Torrent::new(metainfo_path, download_path) {
             Ok(torrent) => self._add_torrent(torrent),
             Err(err) => Err(err),
         }
@@ -957,7 +957,7 @@ mod tests {
             Controller::new(manager_recv, torrents.clone(), npeers.clone(), info_send);
 
         // Add torrent
-        let torrent = Torrent::new(::TEST_FILE.to_string(), ::DL_DIR.to_string()).unwrap();
+        let torrent = Torrent::new(::TEST_FILE, ::DL_DIR).unwrap();
         let npieces = torrent.npieces();
 
         // Simulate new peer
