@@ -78,7 +78,7 @@ macro_rules! acquire_torrent_lock {
 /// just send updates as needed.
 /// We just lock for reads and writes, then,
 /// which would be expensive to send anyway
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum PeerUpdate {
     DownloadSpeed(usize),
     InterestedChange,
@@ -89,6 +89,7 @@ enum PeerUpdate {
     Disconnect,
 }
 
+#[derive(Debug, Clone, PartialEq)]
 enum ManagerUpdate {
     Choke,
     Unchoke,
@@ -981,13 +982,36 @@ mod tests {
     use bittorrent::tracker::tests::{default_tracker, run_server};
     use bittorrent::tracker::TrackerResponse;
 
+    macro_rules! controller_setup {
+        ($controller:ident,$manager_send:ident,$npeers:ident,$info_hash:ident,$npieces:ident) => (
+            let ($manager_send, manager_recv) = mpsc::channel();
+            let torrents = Arc::new(Mutex::new(HashMap::new()));
+            let $npeers = Arc::new(AtomicUsize::new(0));
+            let (info_send, info_recv) = mpsc::channel();
+
+            let mut $controller =
+                Controller::new(manager_recv, torrents.clone(), $npeers.clone(), info_send);
+
+            // Add torrent
+            let torrent = Torrent::new(::TEST_FILE, ::DL_DIR).unwrap();
+            let $npieces = torrent.npieces();
+
+            let $info_hash = torrent.info_hash().clone();
+            let npieces = torrent.npieces();
+            {
+                let mut ts = torrents.lock().unwrap();
+                ts.insert(torrent.info_hash(), torrent);
+            }
+        );
+    }
+
     fn create_manager(port: u16) -> (Manager, mpsc::Receiver<InfoMsg>) {
         let mut manager = Manager::new().port(port);
         let receiver = manager.handle();
         return (manager, receiver);
     }
 
-    #[test]
+    /*#[test]
     fn test_send_receive() {
         let _ = env_logger::init();
         thread::spawn(move || {
@@ -1016,7 +1040,7 @@ mod tests {
                 _ => (),
             }
         }
-    }
+    }*/
 
     fn gen_peer(port: i64, info_hash: Hash) -> Peer {
         Peer::new(PeerInfo {
@@ -1029,29 +1053,10 @@ mod tests {
 
     #[test]
     fn test_peer_updates() {
-        /* begin setup */
-
-        // Create controller
-        let (manager_send, manager_recv) = mpsc::channel();
-        let torrents = Arc::new(Mutex::new(HashMap::new()));
-        let npeers = Arc::new(AtomicUsize::new(0));
-        let (info_send, info_recv) = mpsc::channel();
-
-        let mut controller =
-            Controller::new(manager_recv, torrents.clone(), npeers.clone(), info_send);
-
-        // Add torrent
-        let torrent = Torrent::new(::TEST_FILE, ::DL_DIR).unwrap();
-        let npieces = torrent.npieces();
-
+        controller_setup!(controller, manager_send, npeers, info_hash, npieces);
         // Simulate new peer
-        let peer = gen_peer(3001, torrent.info_hash());
+        let peer = gen_peer(3001, info_hash);
         let peer_comm = Manager::register_peer(&peer, npeers.clone(), &manager_send);
-
-        {
-            let mut ts = torrents.lock().unwrap();
-            ts.insert(torrent.info_hash(), torrent);
-        }
 
         controller.try_recv_new_peer();
         assert_eq!(controller.peer_priority.len(), 1);
@@ -1091,14 +1096,31 @@ mod tests {
 
     fn test_worker() {}
 
-    fn test_send_requests() {
-        // Connect some peers
+    fn test_make_requests() {
+        // Setup
+        controller_setup!(controller, manager_send, npeers, info_hash, npieces);
+        // Connect some peers (mock)
+        let peer = gen_peer(3002, info_hash);
+        let peer_comm = Manager::register_peer(&peer, npeers.clone(), &manager_send);
+        let peer_2 = gen_peer(3003, info_hash);
+        let peer_comm_2 = Manager::register_peer(&peer_2, npeers.clone(), &manager_send);
+
         // Some of those peers stop choking
+        peer_comm_2.send(PeerUpdate::ChokingChange);
+        // Run make_requests()
+        controller.make_requests();
         // Make sure those peers get requests
+        assert_eq!(peer_comm.recv(), ManagerUpdate::None);
+        if let ManagerUpdate::Request(req) = peer_comm_2.recv() {
+            assert!(true);
+        } else {
+            assert!(false);
+        }
+        assert_eq!(peer_comm_2.recv(), ManagerUpdate::None);
     }
 
     fn test_update_priority() {
-        // Try receiving some `have`s and getting some disconnects with simulated peer
+        // Try receiving some `have`s and getting some disconnects with mock peer
         // Make sure priority is updated
     }
 
