@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use bittorrent::{Hash, ParseError, Piece, PieceData, metainfo::BTFile, metainfo::MetaInfo};
 use std::collections::{HashMap, VecDeque};
 use bit_vec::BitVec;
@@ -37,7 +38,7 @@ pub struct Torrent {
 
     // Runtime info:
     #[serde(skip)]
-    piece_queue: PriorityQueue<usize, isize>, // index -> rarity
+    piece_queue: PieceQueue, // index -> rarity
 
     #[serde(skip)]
     outstanding_requests: VecDeque<Request>, // Requests that have been made, but not fullfilled
@@ -88,6 +89,90 @@ impl DLMarker {
         match self {
             &DLMarker::Begin(val) => val,
             &DLMarker::End(val) => val,
+        }
+    }
+}
+
+/// Two-tiered priority queue
+/// 0-priority pieces are kept in `zeros`; they have effectively -inf priority,
+/// since there are no peers that have them
+/// Pieces move between zeros and queue as necessary
+#[derive(PartialEq, Debug, Clone)]
+struct PieceQueue {
+    zeros: HashSet<usize>,
+    queue: PriorityQueue<usize, isize>,
+}
+
+const MIN_PRIORITY: isize = -(::MAX_PEERS as isize) - 1; // never a valid value
+impl PieceQueue {
+    pub fn new(npieces: usize) -> PieceQueue {
+        PieceQueue {
+            zeros: HashSet::from_iter(0..npieces),
+            queue: PriorityQueue::from_iter((0..npieces).map(|i| (i, MIN_PRIORITY))),
+        }
+    }
+
+    pub fn peek(&self) -> Option<(usize, isize)> {
+        if let Some((i, v)) = self.queue.peek() {
+            Some((*i, *v))
+        } else {
+            None
+        }
+    }
+
+    pub fn pop(&mut self) -> Option<(usize, isize)> {
+        if let Some((i, priority)) = self.peek() {
+            if priority != MIN_PRIORITY {
+                self.queue.pop()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    fn get_priority(&self, index: &usize) -> Option<isize> {
+        if let Some(v) = self.queue.get_priority(index) {
+            Some(*v)
+        } else {
+            None
+        }
+    }
+
+    pub fn change_priority_by<F>(&mut self, index: &usize, f: F) -> Option<isize>
+    where
+        F: Fn(isize) -> isize,
+    {
+        if let Some(_) = self.zeros.get(index) {
+            let new_priority = f(0);
+            if new_priority > 0 {
+                panic!("Priority can't be above 0");
+            } else if new_priority < 0 {
+                self.zeros.remove(index);
+                self.queue.change_priority(index, new_priority);
+            }
+            Some(new_priority)
+        } else if let Some(priority) = self.get_priority(index) {
+            let new_priority = f(priority);
+            if new_priority == 0 {
+                self.zeros.insert(*index);
+                self.queue.change_priority(index, MIN_PRIORITY);
+            } else {
+                self.queue.change_priority(index, new_priority);
+            }
+            Some(new_priority)
+        } else {
+            None
+        }
+    }
+}
+
+impl Default for PieceQueue {
+    fn default() -> Self {
+        PieceQueue {
+            zeros: Default::default(),
+            queue: Default::default(),
         }
     }
 }
@@ -158,7 +243,7 @@ impl Torrent {
         let mut torrent = Torrent::_new(infofile, download_dir)?;
         let npieces = torrent.metainfo.npieces();
         torrent.bitfield = BitVec::from_elem(npieces as usize, false);
-        torrent.piece_queue = Torrent::init_queue(npieces as usize);
+        torrent.piece_queue = PieceQueue::new(npieces as usize);
         return Ok(torrent);
     }
 
@@ -191,11 +276,6 @@ impl Torrent {
             }
         }
         return Ok(());
-    }
-
-    #[inline]
-    fn init_queue(npieces: usize) -> PriorityQueue<usize, isize> {
-        PriorityQueue::from_iter((0..npieces).map(|i| (i, 0)))
     }
 
     pub fn trackers(&self) -> Vec<String> {
@@ -585,6 +665,42 @@ mod tests {
     use bittorrent::{Piece, metainfo::BTFile};
     use bittorrent::utils::gen_random_bytes;
     use std::path::PathBuf;
+
+    #[test]
+    fn test_piece_queue() {
+        let mut piece_queue = PieceQueue::new(3);
+        // Initially nothing in queue
+        assert_eq!(piece_queue.pop(), None);
+        // Change priority
+        piece_queue.change_priority_by(&0, |p| p - 1).unwrap();
+        assert_eq!(piece_queue.queue.len(), 3);
+        assert_eq!(piece_queue.zeros.len(), 2);
+        assert_eq!(piece_queue.peek().unwrap(), (0, -1));
+        // Change it back
+        piece_queue.change_priority_by(&0, |p| p + 1).unwrap();
+        assert_eq!(piece_queue.pop(), None);
+        // Change again
+        piece_queue.change_priority_by(&0, |p| p - ::MAX_PEERS as isize);
+        assert_eq!(piece_queue.pop().unwrap(), (0, -(::MAX_PEERS as isize)));
+        assert_eq!(piece_queue.change_priority_by(&0, |p| p + 1), None);
+        // Change the other two
+        piece_queue.change_priority_by(&1, |p| p - 1).unwrap();
+        piece_queue.change_priority_by(&2, |p| p - 2).unwrap();
+        assert_eq!(piece_queue.peek().unwrap(), (1, -1));
+    }
+
+    #[test]
+    fn test_priority() {
+        let mut torrent = Torrent::new(::TEST_FILE, "").unwrap();
+
+        // update priority for piece
+        for i in 0..torrent.npieces() {
+            torrent.update_priority(i, 1);
+            assert_eq!(torrent.select_piece().unwrap().index as usize, i);
+        }
+        assert_eq!(torrent.select_piece(), None);
+        assert_eq!(torrent.outstanding_requests.len(), torrent.npieces());
+    }
 
     #[test]
     fn test_from_downloaded() {
