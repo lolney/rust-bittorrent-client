@@ -843,7 +843,10 @@ impl Controller {
                             }
                         }
                     }
-                    None => trace!("Exhausted possible requests for torrent {}", torrent.name()),
+                    None => {
+                        trace!("Exhausted possible requests for torrent {}", torrent.name());
+                        break;
+                    }
                 }
             }
         }
@@ -861,18 +864,27 @@ impl Controller {
     }
 
     fn try_recv_new_peer(&mut self) {
-        match self.recv.try_recv() {
-            Ok(newpeer) => {
-                self.peer_priority.push(newpeer.peer_id, newpeer.priority);
-                self.peers.insert(newpeer.peer_id, newpeer.comm);
-            }
-            Err(err) => match err {
-                mpsc::TryRecvError::Empty => {}
-                mpsc::TryRecvError::Disconnected => {
-                    info!("TCP listener thread has shut down. Controller now shutting down.");
-                    return;
+        loop {
+            match self.recv.try_recv() {
+                Ok(newpeer) => {
+                    let mut torrents = torrents!(self);
+                    let mut torrent = torrents.get(&newpeer.info_hash).unwrap();
+
+                    self.peer_priority.push(newpeer.peer_id, newpeer.priority);
+                    self.peers.insert(newpeer.peer_id, newpeer.comm);
+                    self.bitfields
+                        .insert(newpeer.peer_id, BitVec::from_elem(torrent.npieces(), false));
                 }
-            },
+                Err(err) => match err {
+                    mpsc::TryRecvError::Empty => {
+                        return;
+                    }
+                    mpsc::TryRecvError::Disconnected => {
+                        info!("TCP listener thread has shut down. Controller now shutting down.");
+                        return;
+                    }
+                },
+            }
         }
     }
 
@@ -920,9 +932,7 @@ impl Controller {
                     .change_priority_by(peer_id, PeerPriority::flip_choking);
             }
             &PeerUpdate::Have(piece_index) => {
-                let bitfield = self.bitfields
-                    .entry(peer_id.clone())
-                    .or_insert(BitVec::new());
+                let mut bitfield = self.bitfields.get_mut(&peer_id).unwrap();
                 bitfield.set(piece_index as usize, true);
             }
             &PeerUpdate::Downloaded(index) => {
@@ -943,12 +953,8 @@ impl Controller {
                 }
             }
             &PeerUpdate::Bitfield(ref _bitfield) => {
-                let bitfield = self.bitfields
-                    .entry(peer_id.clone())
-                    .or_insert(BitVec::new());
-                if bitfield.len() == 0 {
-                    bitfield.clone_from(_bitfield);
-                } else if bitfield.len() == _bitfield.len() {
+                let mut bitfield = self.bitfields.get_mut(&peer_id).unwrap();
+                if bitfield.len() == _bitfield.len() {
                     bitfield.union(_bitfield);
                 } else {
                     panic!("PeerUpdate sent invalid bitfield");
@@ -1096,6 +1102,7 @@ mod tests {
 
     fn test_worker() {}
 
+    #[test]
     fn test_make_requests() {
         // Setup
         controller_setup!(controller, manager_send, npeers, info_hash, npieces);
@@ -1104,10 +1111,21 @@ mod tests {
         let peer_comm = Manager::register_peer(&peer, npeers.clone(), &manager_send);
         let peer_2 = gen_peer(3003, info_hash);
         let peer_comm_2 = Manager::register_peer(&peer_2, npeers.clone(), &manager_send);
+        controller.try_recv_new_peer();
 
         // Some of those peers stop choking
+        assert_eq!(controller.bitfields[peer_2.peer_id()][0], false);
         peer_comm_2.send(PeerUpdate::ChokingChange);
+        peer_comm_2.send(PeerUpdate::Have(0));
+        controller.check_messages();
+        assert_eq!(controller.bitfields[peer_2.peer_id()][0], true);
+
         // Run make_requests()
+        {
+            let mut ts = controller.torrents.lock().unwrap();
+            let mut torrent = ts.get_mut(&info_hash).unwrap();
+            torrent.update_priority(0, 1);
+        }
         controller.make_requests();
         // Make sure those peers get requests
         assert_eq!(peer_comm.recv(), ManagerUpdate::None);
