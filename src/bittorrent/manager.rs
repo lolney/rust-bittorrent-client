@@ -452,7 +452,9 @@ impl Manager {
                         .expect("Expected connection to have port")
                         .port() as i64,
                 };
-                let peer = Peer::new(info);
+                let torrents = torrents.lock().expect("Torrents mutex poisoned");
+                let torrent = torrents.get(&info.info_hash).unwrap();
+                let peer = Peer::new(info, torrent.npieces());
                 Ok(peer)
             }
         }
@@ -957,7 +959,11 @@ impl Controller {
                 if bitfield.len() == _bitfield.len() {
                     bitfield.union(_bitfield);
                 } else {
-                    panic!("PeerUpdate sent invalid bitfield");
+                    panic!(
+                        "PeerUpdate sent invalid bitfield: {}, {}",
+                        bitfield.len(),
+                        _bitfield.len()
+                    );
                 }
             }
             &PeerUpdate::Disconnect => {
@@ -1017,7 +1023,7 @@ mod tests {
         return (manager, receiver);
     }
 
-    /*#[test]
+    #[test]
     fn test_send_receive() {
         let _ = env_logger::init();
         thread::spawn(move || {
@@ -1046,15 +1052,18 @@ mod tests {
                 _ => (),
             }
         }
-    }*/
+    }
 
     fn gen_peer(port: i64, info_hash: Hash) -> Peer {
-        Peer::new(PeerInfo {
-            peer_id: Peer::gen_peer_id(),
-            info_hash: info_hash,
-            ip: "127.0.0.1".to_string(),
-            port: port,
-        })
+        Peer::new(
+            PeerInfo {
+                peer_id: Peer::gen_peer_id(),
+                info_hash: info_hash,
+                ip: "127.0.0.1".to_string(),
+                port: port,
+            },
+            1,
+        )
     }
 
     #[test]

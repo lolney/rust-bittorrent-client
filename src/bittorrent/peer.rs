@@ -97,7 +97,7 @@ macro_rules! message_calc_length {
 /// Maintains its own request queue
 impl Peer {
     // TODO: errors for lengths larger than the allowed size
-    pub fn new(info: PeerInfo) -> Peer {
+    pub fn new(info: PeerInfo, npieces: usize) -> Peer {
         Peer {
             am_choking: true,       // we won't send (we control)
             am_interested: false,   // requesting peer to send (we control)
@@ -105,7 +105,7 @@ impl Peer {
             peer_interested: false, // peer wants us to send (they control)
             peer_info: info,
             time: 0,
-            bitfield: BitVec::new(), // their bitfield
+            bitfield: BitVec::from_elem(npieces, false), // their bitfield
             request_queue: Vec::new(),
         }
     }
@@ -182,9 +182,38 @@ impl Peer {
         }
     }
 
+    fn end_bits(bitfield: &[u8]) -> usize {
+        let len = bitfield.len();
+        for bit in 0..8 {
+            let mask = 1 << bit;
+            if mask & bitfield[len - 1] != 0 {
+                return 8 - bit;
+            }
+        }
+        return 0;
+    }
+
+    fn create_bitfield(bitfield: &[u8], spare_bits: usize) -> BitVec {
+        let len = bitfield.len();
+        let mut bf = BitVec::from_bytes(&bitfield[0..(len - 1)]);
+        let iter = (spare_bits..8)
+            .rev()
+            .map(|bit| ((1 << bit) & bitfield[len - 1]) != 0);
+        for elem in iter {
+            bf.push(elem);
+        }
+        return bf;
+    }
+
     pub fn parse_bitfield(&mut self, bitfield: &[u8]) -> Result<Action, &'static str> {
-        if self.bitfield.len() == 0 || (bitfield.len() == self.bitfield.len()) {
-            self.bitfield = BitVec::from_bytes(bitfield);
+        if bitfield.len() == 0 {
+            return Err("Received 0-length bitfield");
+        }
+        let spare_bits = (8 - (self.bitfield.len() % 8)) % 8;
+        let bf = Peer::create_bitfield(bitfield, spare_bits);
+
+        if bf.len() == self.bitfield.len() {
+            self.bitfield.union(&bf);
         } else {
             return Err("Received bitfield with length different from existing bitfield");
         }
@@ -373,7 +402,7 @@ mod tests {
 
     #[test]
     fn test_simple_messages() {
-        let mut peer = Peer::new(PeerInfo::new());
+        let mut peer = Peer::new(PeerInfo::new(), 1);
 
         let keep_alive = [0u32];
         let choke = message!(1u32, 0u8);
@@ -404,20 +433,17 @@ mod tests {
 
     #[test]
     fn test_parse_have() {
-        let mut peer = Peer::new(PeerInfo::new());
+        let mut peer = Peer::new(PeerInfo::new(), 32);
 
         let have = message!(5u32, 4u8, 0u32);
         assert_eq!(Peer::have(0), have);
-        assert_eq!(
-            peer.parse_message(&have),
-            Err("Have not received bitfield from Peer")
-        );
-        assert_eq!(peer.bitfield.get(0), None);
+        assert_eq!(peer.parse_message(&have), Ok(Action::Have(0)));
+        assert_eq!(peer.bitfield.get(0).unwrap(), true);
 
-        let bitfield = message!(5u32, 5u8, 0b01000000000000000000000000000000 as u32);
+        let bitfield = message!(5u32, 5u8, 0b01000000000000000000000000000001 as u32);
         assert_eq!(
             Peer::bitfield(&BitVec::from_bytes(&[
-                0b01000000, 0b00000000, 0b00000000, 0b00000000
+                0b01000000, 0b00000000, 0b00000000, 0b00000001
             ])),
             bitfield
         );
@@ -431,17 +457,16 @@ mod tests {
             Err("Received have message with piece index that exceeds number of pieces")
         );
 
-        let bitfield = message!(
-            9u32,
+        let bitfield = message_from_bytes!(
+            6u32,
             5u8,
-            0b10000000000000000000000000000000 as u32,
-            0b10000000000000000000000000000000 as u32
+            [0b01000000, 0b00000000, 0b00000000, 0b00000001, 0b10000000]
         );
         assert_eq!(
             peer.parse_message(&bitfield),
             Err("Received bitfield with length different from existing bitfield")
         );
-        peer.bitfield = BitVec::new();
+        peer.bitfield = BitVec::from_elem(33, false);
         peer.parse_message(&bitfield).unwrap();
         assert_eq!(peer.bitfield.get(32).unwrap(), true);
 
@@ -453,7 +478,7 @@ mod tests {
 
     #[test]
     fn test_parse_request() {
-        let mut peer = Peer::new(PeerInfo::new());
+        let mut peer = Peer::new(PeerInfo::new(), 1);
 
         let request = message!(13u32, 6u8, 0u32, 0u32, 16384u32);
 
@@ -467,7 +492,7 @@ mod tests {
 
     #[test]
     fn test_parse_piece() {
-        let mut peer = Peer::new(PeerInfo::new());
+        let mut peer = Peer::new(PeerInfo::new(), 1);
 
         let message = message_calc_length!(7u8, 0u32, 0u32, 1u32, 2u32, 3u32);
         let bytes = byte_slice_from_u32s!(1u32, 2u32, 3u32);
@@ -497,6 +522,19 @@ mod tests {
 
         assert_eq!(pi, peer_id);
         assert_eq!(inf, info_hash);
+    }
+
+    #[test]
+    fn test_create_bitfield() {
+        assert_eq!(Peer::create_bitfield(&[0b00000001], 0).len(), 8);
+        assert_eq!(Peer::create_bitfield(&[0b00000001], 2).len(), 6);
+        assert_eq!(Peer::create_bitfield(&[0b00000001], 7).len(), 1);
+
+        assert_eq!(Peer::create_bitfield(&[0b00000001, 0b00000001], 7).len(), 9);
+        assert_eq!(
+            Peer::create_bitfield(&[0b00000001, 0b00000001], 0).len(),
+            16
+        );
     }
 }
 
