@@ -294,10 +294,20 @@ impl Torrent {
         self.outstanding_requests.len()
     }
 
+    pub fn bitfield(&self) -> &BitVec {
+        &self.bitfield
+    }
+
     /// Returns number of bytes downloaded
     pub fn downloaded(&self) -> usize {
-        self.metainfo.last_piece_length() as usize
-            + ((self.bitfield.iter().filter(|x| *x).count() - 1) * self.piece_length() as usize)
+        let last = if self.bitfield[self.bitfield.len() - 1] {
+            1
+        } else {
+            0
+        };
+        let count = self.bitfield.iter().filter(|x| *x).count();
+        let rest = if count >= 1 { count - 1 } else { 0 };
+        (last * self.metainfo.last_piece_length() as usize) + (rest * self.piece_length() as usize)
     }
 
     /// Returns number of bytes remaining

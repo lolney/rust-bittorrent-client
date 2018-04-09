@@ -272,7 +272,7 @@ impl Peer {
     }
 
     // Accomodates bitvecs of max length (MAX_U32 - 1)
-    pub fn bitfield(bitvec: BitVec) -> Vec<u8> {
+    pub fn bitfield(bitvec: &BitVec) -> Vec<u8> {
         let bytes = bitvec.to_bytes();
         let length = 1 + bytes.len() as u32;
         message_from_bytes!(length, 5u8, bytes)
@@ -416,7 +416,7 @@ mod tests {
 
         let bitfield = message!(5u32, 5u8, 0b01000000000000000000000000000000 as u32);
         assert_eq!(
-            Peer::bitfield(BitVec::from_bytes(&[
+            Peer::bitfield(&BitVec::from_bytes(&[
                 0b01000000, 0b00000000, 0b00000000, 0b00000000
             ])),
             bitfield

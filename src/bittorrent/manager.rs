@@ -498,6 +498,12 @@ impl Manager {
             .set_read_timeout(Some(Duration::new(::READ_TIMEOUT, 0)))
             .unwrap_or_else(|e| error!("Failed to set read timeout on stream: {}", e));
 
+        // Begin by sending our bitfield
+        {
+            acquire_torrent_lock!(torrents, peer, torrent);
+            stream.write(&Peer::bitfield(&torrent.bitfield()));
+        }
+
         loop {
             // match incoming messages from the peer
             match stream.read(&mut buf) {
@@ -662,7 +668,6 @@ impl Manager {
                         Ok(peer) => {
                             info!("New peer connected: {}", peer.peer_id());
                             let peer_comm = Manager::register_peer(&peer, npeers, &manager_send);
-
                             thread::spawn(move || {
                                 // manages new connection
                                 Manager::receive(peer, stream, torrents, peer_comm);
@@ -764,6 +769,7 @@ impl Controller {
         let start = Instant::now();
         let ten_secs = Duration::from_secs(10);
 
+        self.choke();
         loop {
             /// Send updates at 1-second interval
             self.send_update();
@@ -981,7 +987,7 @@ mod tests {
         return (manager, receiver);
     }
 
-    /*#[test] 
+    #[test]
     fn test_send_receive() {
         let _ = env_logger::init();
         thread::spawn(move || {
@@ -1010,7 +1016,7 @@ mod tests {
                 _ => (),
             }
         }
-    }*/
+    }
 
     fn gen_peer(port: i64, info_hash: Hash) -> Peer {
         Peer::new(PeerInfo {
