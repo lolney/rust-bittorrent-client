@@ -296,7 +296,13 @@ impl Torrent {
 
     /// Returns number of bytes downloaded
     pub fn downloaded(&self) -> usize {
-        self.bitfield.iter().filter(|x| *x).count() * self.piece_length() as usize
+        self.metainfo.last_piece_length() as usize
+            + ((self.bitfield.iter().filter(|x| *x).count() - 1) * self.piece_length() as usize)
+    }
+
+    /// Returns number of bytes remaining
+    pub fn remaining(&self) -> usize {
+        self.metainfo.total_size() - self.downloaded()
     }
 
     /// Returns the total size in bytes of the torrent

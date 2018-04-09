@@ -84,58 +84,16 @@ enum PeerUpdate {
     InterestedChange,
     ChokingChange,
     Have(u32),
+    Downloaded(u32),
     Bitfield(BitVec),
     Disconnect,
-}
-
-/// Note: assumes data has been validated by Peer
-impl PeerUpdate {
-    fn process(
-        self,
-        peer_id: &Hash,
-        peers: &mut PriorityQueue<Hash, PeerPriority>,
-        bitfield: &mut BitVec,
-    ) -> bool {
-        match self {
-            PeerUpdate::DownloadSpeed(speed) => {
-                peers.change_priority_by(peer_id, |priority| priority.set_download(speed));
-                false
-            }
-            PeerUpdate::InterestedChange => {
-                peers.change_priority_by(peer_id, PeerPriority::flip_interested);
-                false
-            }
-            PeerUpdate::ChokingChange => {
-                peers.change_priority_by(peer_id, PeerPriority::flip_choking);
-                false
-            }
-            PeerUpdate::Have(piece_index) => {
-                // update priority by 1
-                bitfield.set(piece_index as usize, true);
-                false
-            }
-            PeerUpdate::Bitfield(_bitfield) => {
-                if bitfield.len() == 0 {
-                    bitfield.clone_from(&_bitfield);
-                } else if bitfield.len() == _bitfield.len() {
-                    bitfield.union(&_bitfield);
-                } else {
-                    panic!("PeerUpdate sent invalid bitfield");
-                }
-                false
-            }
-            PeerUpdate::Disconnect => {
-                // for each field in bitfield, update_priority by -1
-                true
-            }
-        }
-    }
 }
 
 enum ManagerUpdate {
     Choke,
     Unchoke,
     Request(Vec<u8>),
+    Have(u32),
     Disconnect,
     None,
 }
@@ -586,7 +544,12 @@ impl Manager {
                             trace!("Writing piece from peer {}: {:?}", peer.peer_id(), piece);
                             download_size = download_size + piece.piece.length;
                             acquire_torrent_lock!(torrents, peer, torrent);
-                            torrent.write_block(&piece);
+                            match torrent.write_block(&piece) {
+                                Ok(()) => {
+                                    comm.send(PeerUpdate::Downloaded(piece.piece.index));
+                                }
+                                Err(e) => error!("Error while writing piece to file: {}", e),
+                            }
                         }
                         Action::InterestedChange => {
                             trace!(
@@ -648,6 +611,9 @@ impl Manager {
                         peer.peer_id()
                     );
                     return;
+                }
+                ManagerUpdate::Have(index) => {
+                    stream.write(Peer::have(index).as_slice());
                 }
                 ManagerUpdate::None => {}
             }
@@ -842,7 +808,7 @@ impl Controller {
 
     fn make_requests(&mut self) {
         let mut torrents = torrents!(self);
-        torrents.retain(|info_hash, ref mut torrent: &mut Torrent| {
+        for (info_hash, mut torrent) in torrents.iter_mut() {
             // Select eligible peers
             let peers_iter: Vec<Hash> = self.peer_priority
                 .iter()
@@ -870,19 +836,10 @@ impl Controller {
                             }
                         }
                     }
-                    None => {
-                        info!("Torrent \"{}\" complete", torrent.name());
-                        self.send.send(InfoMsg::One(self.create_info(
-                            info_hash,
-                            torrent,
-                            Status::Complete,
-                        )));
-                        return false;
-                    }
+                    None => trace!("Exhausted possible requests for torrent {}", torrent.name()),
                 }
             }
-            true
-        });
+        }
     }
 
     fn send_update(&self) {
@@ -919,34 +876,82 @@ impl Controller {
     // this determination will probably not happen whenever possible
     fn check_messages(&mut self) {
         // Can't have mut reference to self in closure
-        let bitfields = &mut self.bitfields;
-        let peer_priority = &mut self.peer_priority;
-        let npeers = &mut self.npeers;
-        self.peers.retain(|peer_id, comm| {
-            let bitfield = bitfields.entry(peer_id.clone()).or_insert(BitVec::new());
-            let disconnected =
-                Controller::process_queue(&mut comm.try_iter(), &peer_id, bitfield, peer_priority);
-            if disconnected {
-                npeers.fetch_sub(1, AtomicOrdering::SeqCst);
-                remove(peer_priority, peer_id);
+        let mut messages = Vec::new();
+
+        for (peer_id, mut comm) in self.peers.iter_mut() {
+            let mut iter = comm.try_iter();
+            loop {
+                match iter.next() {
+                    Some(msg) => {
+                        messages.push((peer_id.clone(), msg.clone()));
+                    }
+                    None => {
+                        break;
+                    }
+                }
             }
-            !disconnected
-        });
+        }
+
+        for (peer_id, msg) in messages {
+            self.process(&peer_id, &msg);
+        }
     }
 
-    /// return true if disconnected; false otherwise
-    fn process_queue(
-        iter: &mut mpsc::TryIter<PeerUpdate>,
-        peer_id: &Hash,
-        bitfield: &mut BitVec,
-        peer_priority: &mut PriorityQueue<Hash, PeerPriority>,
-    ) -> bool {
-        match iter.next() {
-            Some(msg) => {
-                let res = msg.process(peer_id, peer_priority, bitfield);
-                res || Controller::process_queue(iter, peer_id, bitfield, peer_priority)
+    /// Process msg, assuming inputs are valid
+    fn process(&mut self, peer_id: &Hash, msg: &PeerUpdate) {
+        match msg {
+            &PeerUpdate::DownloadSpeed(speed) => {
+                self.peer_priority
+                    .change_priority_by(peer_id, |priority| priority.set_download(speed));
             }
-            None => false,
+            &PeerUpdate::InterestedChange => {
+                self.peer_priority
+                    .change_priority_by(peer_id, PeerPriority::flip_interested);
+            }
+            &PeerUpdate::ChokingChange => {
+                self.peer_priority
+                    .change_priority_by(peer_id, PeerPriority::flip_choking);
+            }
+            &PeerUpdate::Have(piece_index) => {
+                let bitfield = self.bitfields
+                    .entry(peer_id.clone())
+                    .or_insert(BitVec::new());
+                bitfield.set(piece_index as usize, true);
+            }
+            &PeerUpdate::Downloaded(index) => {
+                for (_, comm) in self.peers.iter_mut() {
+                    comm.send(ManagerUpdate::Have(index));
+                }
+                let mut torrents = torrents!(self);
+                let info_hash = self.peer_priority.get(peer_id).unwrap().1.info_hash;
+                let mut torrent = torrents.get_mut(&info_hash).unwrap();
+                let remaining = torrent.remaining();
+                if remaining == 0 {
+                    info!("Torrent \"{}\" complete", torrent.name());
+                    self.send.send(InfoMsg::One(self.create_info(
+                        &info_hash,
+                        &mut torrent,
+                        Status::Complete,
+                    )));
+                }
+            }
+            &PeerUpdate::Bitfield(ref _bitfield) => {
+                let bitfield = self.bitfields
+                    .entry(peer_id.clone())
+                    .or_insert(BitVec::new());
+                if bitfield.len() == 0 {
+                    bitfield.clone_from(_bitfield);
+                } else if bitfield.len() == _bitfield.len() {
+                    bitfield.union(_bitfield);
+                } else {
+                    panic!("PeerUpdate sent invalid bitfield");
+                }
+            }
+            &PeerUpdate::Disconnect => {
+                self.npeers.fetch_sub(1, AtomicOrdering::SeqCst);
+                self.peers.remove(peer_id);
+                remove(&mut self.peer_priority, peer_id);
+            }
         }
     }
 
