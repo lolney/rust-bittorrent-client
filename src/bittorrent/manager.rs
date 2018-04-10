@@ -90,6 +90,16 @@ enum PeerUpdate {
     Disconnect,
 }
 
+impl Message for PeerUpdate {
+    fn get_disconnected() -> Self {
+        PeerUpdate::Disconnect
+    }
+
+    fn get_empty() -> Self {
+        PeerUpdate::Disconnect
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum ManagerUpdate {
     Choke,
@@ -98,6 +108,16 @@ enum ManagerUpdate {
     Have(u32),
     Disconnect,
     None,
+}
+
+impl Message for ManagerUpdate {
+    fn get_disconnected() -> Self {
+        ManagerUpdate::Disconnect
+    }
+
+    fn get_empty() -> Self {
+        ManagerUpdate::None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +142,17 @@ pub struct Info {
 pub enum InfoMsg {
     All(Vec<Info>),
     One(Info),
+    Disconnect,
+}
+
+impl Message for InfoMsg {
+    fn get_disconnected() -> Self {
+        InfoMsg::Disconnect
+    }
+
+    fn get_empty() -> Self {
+        InfoMsg::Disconnect
+    }
 }
 
 impl Ord for Status {
@@ -144,60 +175,61 @@ impl PartialOrd for Status {
 pub struct NewPeerMsg {
     peer_id: Hash,
     info_hash: Hash,
-    comm: ManagerComm,
+    comm: BidirectionalComm<ManagerUpdate, PeerUpdate>,
     priority: PeerPriority,
 }
 
-struct ManagerComm {
-    manager_update_send: mpsc::Sender<ManagerUpdate>,
-    // could instead have only a single copy of this and clone the sender:
-    peer_update_recv: mpsc::Receiver<PeerUpdate>,
+trait Message {
+    fn get_disconnected() -> Self;
+    fn get_empty() -> Self;
 }
 
-struct PeerComm {
-    peer_update_send: mpsc::Sender<PeerUpdate>,
-    manager_update_recv: mpsc::Receiver<ManagerUpdate>,
+struct BidirectionalComm<S, R>
+where
+    S: Message,
+    R: Message,
+{
+    send: mpsc::Sender<S>,
+    recv: mpsc::Receiver<R>,
 }
 
-impl PeerComm {
-    fn create() -> (ManagerComm, PeerComm) {
-        let (peer_update_send, peer_update_recv) = mpsc::channel();
-        let (manager_update_send, manager_update_recv) = mpsc::channel();
+impl<S, R> BidirectionalComm<S, R>
+where
+    S: Message,
+    R: Message,
+{
+    pub fn create() -> (BidirectionalComm<R, S>, BidirectionalComm<S, R>) {
+        let (s_s, s_r) = mpsc::channel();
+        let (r_s, r_r) = mpsc::channel();
 
         (
-            ManagerComm {
-                manager_update_send: manager_update_send,
-                peer_update_recv: peer_update_recv,
+            BidirectionalComm {
+                send: s_s,
+                recv: r_r,
             },
-            PeerComm {
-                peer_update_send: peer_update_send,
-                manager_update_recv: manager_update_recv,
+            BidirectionalComm {
+                send: r_s,
+                recv: s_r,
             },
         )
     }
 
-    fn recv(&self) -> ManagerUpdate {
-        match self.manager_update_recv.try_recv() {
+    pub fn send(&self, update: S) -> Result<(), SendError<S>> {
+        self.send.send(update)
+    }
+
+    pub fn recv(&self) -> R {
+        match self.recv.try_recv() {
             Ok(update) => update,
             Err(err) => match err {
-                mpsc::TryRecvError::Empty => ManagerUpdate::None,
-                mpsc::TryRecvError::Disconnected => ManagerUpdate::Disconnect,
+                mpsc::TryRecvError::Empty => R::get_empty(),
+                mpsc::TryRecvError::Disconnected => R::get_disconnected(),
             },
         }
     }
 
-    fn send(&self, update: PeerUpdate) {
-        self.peer_update_send.send(update);
-    }
-}
-
-impl ManagerComm {
-    fn try_iter(&self) -> mpsc::TryIter<PeerUpdate> {
-        self.peer_update_recv.try_iter()
-    }
-
-    fn send(&self, update: ManagerUpdate) -> Result<(), SendError<ManagerUpdate>> {
-        self.manager_update_send.send(update)
+    pub fn try_iter(&self) -> mpsc::TryIter<R> {
+        self.recv.try_iter()
     }
 }
 
@@ -490,7 +522,7 @@ impl Manager {
         mut peer: Peer,
         mut stream: TcpStream,
         torrents: Arc<Mutex<HashMap<Hash, Torrent>>>,
-        comm: PeerComm,
+        comm: BidirectionalComm<PeerUpdate, ManagerUpdate>,
     ) {
         let mut buf = [0; ::MSG_SIZE];
         let mut download_size = 0;
@@ -651,9 +683,9 @@ impl Manager {
         peer: &Peer,
         npeers: Arc<AtomicUsize>,
         manager_send: &Sender<NewPeerMsg>,
-    ) -> PeerComm {
+    ) -> BidirectionalComm<PeerUpdate, ManagerUpdate> {
         npeers.fetch_add(1, AtomicOrdering::SeqCst);
-        let (manager_comm, peer_comm) = PeerComm::create();
+        let (manager_comm, peer_comm) = BidirectionalComm::create();
 
         manager_send
             .send(NewPeerMsg {
@@ -762,7 +794,7 @@ struct Controller {
     npeers: Arc<AtomicUsize>,
     send: mpsc::Sender<InfoMsg>,
     peer_priority: PriorityQueue<Hash, PeerPriority>,
-    peers: HashMap<Hash, ManagerComm>,
+    peers: HashMap<Hash, BidirectionalComm<ManagerUpdate, PeerUpdate>>,
     bitfields: HashMap<Hash, BitVec>,
 }
 

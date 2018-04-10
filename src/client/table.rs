@@ -120,6 +120,10 @@ impl View for AsyncTableView<Info, TorrentColumn> {
                         self.table.insert_item(info);
                     }
                 },
+                InfoMsg::Disconnect => {
+                    unimplemented!(); // should quit somehow?
+                    break;
+                }
             }
         }
 
