@@ -482,6 +482,7 @@ impl Piece {
         }
     }
 
+    /// maps begin to bytes
     pub fn file_index(&self, piece_length: i64) -> i64 {
         self.begin as i64 + (self.index as i64 * piece_length)
     }

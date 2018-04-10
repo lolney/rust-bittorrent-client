@@ -35,9 +35,9 @@ const HSLEN: usize = 68; // 49 + 19
 const PSTRLEN: u8 = 19;
 const PSTR: &'static str = "BitTorrent protocol";
 const READ_TIMEOUT: u64 = 120; // in seconds
-const MSG_SIZE: usize = 2 ^ 16;
+const MSG_SIZE: usize = 1 << 16;
 /// Recommended message size
-const REC_SIZE: usize = 2 ^ 14;
+const REC_SIZE: usize = 1 << 14;
 
 const DL_DIR: &'static str = "test/test_write";
 const READ_DIR: &'static str = "test/test_read";

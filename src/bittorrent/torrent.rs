@@ -300,24 +300,22 @@ impl Torrent {
 
     /// Returns number of bytes downloaded
     pub fn downloaded(&self) -> usize {
-        let last = if self.bitfield[self.bitfield.len() - 1] {
-            1
-        } else {
-            0
-        };
-        let count = self.bitfield.iter().filter(|x| *x).count();
-        let rest = if count >= 1 { count - 1 } else { 0 };
-        (last * self.metainfo.last_piece_length() as usize) + (rest * self.piece_length() as usize)
+        let n = self.bitfield.len();
+        let last = if self.bitfield[n - 1] { 1 } else { 0 };
+        let count = self.bitfield.iter().take(n - 1).filter(|x| *x).count();
+        (last * self.metainfo.last_piece_length() as usize) + (count * self.piece_length() as usize)
     }
 
     /// Returns number of bytes remaining
     pub fn remaining(&self) -> usize {
-        self.metainfo.total_size() - self.downloaded()
+        let dl = self.downloaded();
+        let size = self.metainfo.total_size();
+        size - dl
     }
 
     /// Returns the total size in bytes of the torrent
     pub fn size(&self) -> usize {
-        self.piece_length() as usize * self.metainfo.npieces() as usize
+        self.metainfo.total_size()
     }
 
     pub fn download_rate(&mut self) -> usize {
@@ -334,7 +332,11 @@ impl Torrent {
     }
 
     fn default_piece(&self, index: usize) -> Piece {
-        Piece::new(index as u32, 0, self.piece_length() as u32)
+        if index == self.npieces() - 1 {
+            Piece::new(index as u32, 0, self.metainfo.last_piece_length() as u32)
+        } else {
+            Piece::new(index as u32, 0, self.piece_length() as u32)
+        }
     }
 
     pub fn npieces(&self) -> usize {
@@ -548,7 +550,11 @@ impl Torrent {
     /// Update data structure to reflect parts of piece
     /// that have been downloaded
     fn insert_piece(&mut self, piece: &Piece) {
-        let max_length: u32 = self.piece_length() as u32;
+        let max_length: u32 = if piece.index == self.npieces() as u32 - 1 {
+            self.metainfo.last_piece_length() as u32
+        } else {
+            self.piece_length() as u32
+        };
 
         if piece.begin == 0 && piece.length == max_length {
             // Downloaded whole piece at once

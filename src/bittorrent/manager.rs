@@ -1,5 +1,6 @@
 extern crate core;
 
+use std::sync::mpsc::SendError;
 use bittorrent::{metainfo, torrent, Hash, ParseError, Piece, peer::Action, peer::Peer,
                  peer::PeerInfo, torrent::Torrent, tracker::Tracker};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -195,8 +196,8 @@ impl ManagerComm {
         self.peer_update_recv.try_iter()
     }
 
-    fn send(&self, update: ManagerUpdate) {
-        self.manager_update_send.send(update);
+    fn send(&self, update: ManagerUpdate) -> Result<(), SendError<ManagerUpdate>> {
+        self.manager_update_send.send(update)
     }
 }
 
@@ -501,6 +502,10 @@ impl Manager {
             .set_read_timeout(Some(Duration::new(::READ_TIMEOUT, 0)))
             .unwrap_or_else(|e| error!("Failed to set read timeout on stream: {}", e));
 
+        stream
+            .set_nonblocking(true)
+            .expect("set_nonblocking call failed");
+
         // Begin by sending our bitfield
         {
             acquire_torrent_lock!(torrents, peer, torrent);
@@ -513,6 +518,7 @@ impl Manager {
                 Err(e) => {
                     match e.kind() {
                         ErrorKind::WouldBlock => {
+                            /*
                             // for each field in bitfield, update_priority by -1
                             if peer.peer_choking {
                                 acquire_torrent_lock!(torrents, peer, torrent);
@@ -520,14 +526,15 @@ impl Manager {
                             }
 
                             comm.send(PeerUpdate::Disconnect);
-                            return;
+                            return;*/
                         } // timeout
                         _ => error!("Error while reading from stream: {}", e),
                     }
                 }
-                Ok(n) => match peer.parse_message(&buf) {
-                    Ok(action) => match (action) {
+                Ok(n) => match peer.parse_message(&buf[0..n]) {
+                    Ok(action) => match action {
                         Action::Request(requests) => {
+                            info!("Fullfilling request for peer {}", peer.peer_id());
                             acquire_torrent_lock!(torrents, peer, torrent);
                             for req in requests {
                                 match torrent.read_block(&req) {
@@ -550,7 +557,11 @@ impl Manager {
                             }
                         }
                         Action::Write(piece) => {
-                            trace!("Writing piece from peer {}: {:?}", peer.peer_id(), piece);
+                            info!(
+                                "Writing piece from peer {}: {:?}",
+                                peer.peer_id(),
+                                piece.piece
+                            );
                             download_size = download_size + piece.piece.length;
                             acquire_torrent_lock!(torrents, peer, torrent);
                             match torrent.write_block(&piece) {
@@ -569,6 +580,7 @@ impl Manager {
                             comm.send(PeerUpdate::InterestedChange);
                         }
                         Action::ChokingChange => {
+                            info!("Received choking change");
                             acquire_torrent_lock!(torrents, peer, torrent);
                             if peer.peer_choking {
                                 Manager::update_priority_all(&peer, &mut torrent, -1);
@@ -606,13 +618,19 @@ impl Manager {
             // match inc commands from the manager
             match comm.recv() {
                 ManagerUpdate::Request(req) => {
+                    info!("Sending request");
                     stream.write(req.as_slice());
                 }
                 ManagerUpdate::Choke => {
-                    stream.write(peer.choke(true).as_slice());
+                    if !peer.am_choking {
+                        stream.write(peer.choke(true).as_slice());
+                    }
                 }
                 ManagerUpdate::Unchoke => {
-                    stream.write(peer.choke(false).as_slice());
+                    if peer.am_choking {
+                        info!("Unchoking peer {}", peer.peer_id());
+                        stream.write(peer.choke(false).as_slice());
+                    }
                 }
                 ManagerUpdate::Disconnect => {
                     info!(
@@ -769,8 +787,8 @@ impl Controller {
     // TODO: This is a strong candidate to be replaced by a task system;
     // Task: returns Option<Update>
     pub fn run_loop(&mut self) {
-        let start = Instant::now();
-        let ten_secs = Duration::from_secs(10);
+        let mut start = Instant::now();
+        let ten_secs = Duration::from_secs(5);
 
         self.choke();
         loop {
@@ -785,9 +803,9 @@ impl Controller {
             // Update choking on 10-sec intervals
             if start.elapsed() >= ten_secs {
                 self.choke();
+                self.make_requests();
+                start = Instant::now();
             }
-
-            self.make_requests();
         }
     }
 
@@ -839,8 +857,9 @@ impl Controller {
                                 let comm = self.peers
                                     .get(id)
                                     .expect("Peer in priority queue but not comms map");
-                                comm.send(ManagerUpdate::Request(Peer::request(&piece)));
-                                trace!("Requesting piece {:?} from peer {}", piece, id);
+                                comm.send(ManagerUpdate::Request(Peer::request(&piece)))
+                                    .unwrap();
+                                info!("Requesting piece {:?} from peer {}", piece, id);
                                 break;
                             }
                         }
@@ -862,7 +881,7 @@ impl Controller {
             .collect();
         self.send
             .send(InfoMsg::All(out))
-            .map_err(|e| error!("Info update failed with error: {:?}", e));
+            .map_err(|e| error!("Info update failed with error: {}", e));
     }
 
     fn try_recv_new_peer(&mut self) {
@@ -945,6 +964,7 @@ impl Controller {
                 let info_hash = self.peer_priority.get(peer_id).unwrap().1.info_hash;
                 let mut torrent = torrents.get_mut(&info_hash).unwrap();
                 let remaining = torrent.remaining();
+                info!("{} bytes remaining", remaining);
                 if remaining == 0 {
                     info!("Torrent \"{}\" complete", torrent.name());
                     self.send.send(InfoMsg::One(self.create_info(

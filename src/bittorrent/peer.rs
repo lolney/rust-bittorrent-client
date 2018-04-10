@@ -2,6 +2,7 @@ use byteorder::BigEndian;
 use byteorder::ByteOrder;
 use bit_vec::BitVec;
 use bittorrent::{Hash, ParseError, Piece, PieceData};
+use std::error::Error;
 use std::mem::transmute;
 use rand::Rng;
 use rand;
@@ -30,7 +31,7 @@ pub enum Action {
     None,
 }
 
-const QUEUE_LENGTH: usize = 5;
+const QUEUE_LENGTH: usize = 1;
 
 // Macro for creating peer messages with 32-byte arguments
 macro_rules! message {
@@ -90,10 +91,10 @@ macro_rules! message_calc_length {
     };
 }
 
-/// Contains methods for parsing and sending relevant P2P messages
+/// Contains methods for parsing and sending relevant P2P messages.
 /// If message contains new information to be acted on, the parse_ method returns an action
 /// Actions reflect actual changes in state - if, e.g., duplicate messages are received,
-/// calls to `parse_` after the first one should return Action::None
+/// calls to `parse_` after the first one should return Action::None.
 /// Maintains its own request queue
 impl Peer {
     // TODO: errors for lengths larger than the allowed size
@@ -110,14 +111,22 @@ impl Peer {
         }
     }
 
-    pub fn parse_message(&mut self, msg: &[u8]) -> Result<Action, &'static str> {
+    pub fn parse_message(&mut self, msg: &[u8]) -> Result<Action, ParseError> {
+        if msg.len() < 4 {
+            return Err(parse_error!("Received message of length less than 4"));
+        }
         self.time = 0;
         let len: u32 = BigEndian::read_u32(&msg[0..4]); // parse u32
         if len == 0 {
-            Ok(Action::None)
-        }
-        // keep alive
-        else {
+            Ok(Action::None) // keep alive
+        } else {
+            if msg.len() != 4 + len as usize {
+                return Err(parse_error!(
+                    "Reported message length {} does not match actual length {}",
+                    len + 4,
+                    msg.len()
+                ));
+            }
             let id = msg[4];
 
             match id {
@@ -131,7 +140,7 @@ impl Peer {
                 7 => self.parse_piece(msg, len + 4),
                 8 => self.parse_cancel(msg),
                 9 => self.parse_port(),
-                _ => Err("Invalid message id"),
+                _ => Err(parse_error!("Invalid message id: {}", id)),
             }
         }
     }
@@ -149,7 +158,7 @@ impl Peer {
     }
 
     // TODO: these errors should probably be PareErrors
-    pub fn parse_choke(&mut self, choke: bool) -> Result<Action, &'static str> {
+    pub fn parse_choke(&mut self, choke: bool) -> Result<Action, ParseError> {
         if self.peer_choking == choke {
             Ok(Action::None)
         } else {
@@ -158,7 +167,7 @@ impl Peer {
         }
     }
 
-    pub fn parse_interested(&mut self, interested: bool) -> Result<Action, &'static str> {
+    pub fn parse_interested(&mut self, interested: bool) -> Result<Action, ParseError> {
         if self.peer_interested == interested {
             Ok(Action::None)
         } else {
@@ -167,12 +176,13 @@ impl Peer {
         }
     }
 
-    pub fn parse_have(&mut self, piece_index: u32) -> Result<Action, &'static str> {
-        if self.bitfield.is_empty() {
-            return Err("Have not received bitfield from Peer");
-        }
+    pub fn parse_have(&mut self, piece_index: u32) -> Result<Action, ParseError> {
         if piece_index as usize >= self.bitfield.len() {
-            return Err("Received have message with piece index that exceeds number of pieces");
+            return Err(parse_error!(
+                "Received have message with piece index {} that exceeds number of pieces {}",
+                piece_index,
+                self.bitfield.len()
+            ));
         }
         if self.bitfield[piece_index as usize] {
             Ok(Action::None)
@@ -205,9 +215,9 @@ impl Peer {
         return bf;
     }
 
-    pub fn parse_bitfield(&mut self, bitfield: &[u8]) -> Result<Action, &'static str> {
+    pub fn parse_bitfield(&mut self, bitfield: &[u8]) -> Result<Action, ParseError> {
         if bitfield.len() == 0 {
-            return Err("Received 0-length bitfield");
+            return Err(parse_error!("Received 0-length bitfield"));
         }
         let spare_bits = (8 - (self.bitfield.len() % 8)) % 8;
         let bf = Peer::create_bitfield(bitfield, spare_bits);
@@ -215,7 +225,11 @@ impl Peer {
         if bf.len() == self.bitfield.len() {
             self.bitfield.union(&bf);
         } else {
-            return Err("Received bitfield with length different from existing bitfield");
+            return Err(parse_error!(
+                "Received bitfield with length ({}) different from existing bitfield ({})",
+                bf.len(),
+                self.bitfield.len()
+            ));
         }
         Ok(Action::Bitfield(self.bitfield.clone()))
     }
@@ -232,7 +246,7 @@ impl Peer {
         }
     }
 
-    pub fn parse_request(&mut self, msg: &[u8]) -> Result<Action, &'static str> {
+    pub fn parse_request(&mut self, msg: &[u8]) -> Result<Action, ParseError> {
         let piece = self.parse_piece_generic(msg);
         self.request_queue.push(piece);
 
@@ -246,7 +260,7 @@ impl Peer {
     }
 
     // TODO: Need to enforce maximum message size
-    pub fn parse_piece(&mut self, msg: &[u8], len: u32) -> Result<Action, &'static str> {
+    pub fn parse_piece(&mut self, msg: &[u8], len: u32) -> Result<Action, ParseError> {
         let index = BigEndian::read_u32(&msg[5..9]);
         let begin = BigEndian::read_u32(&msg[9..13]);
         let block = &msg[13..len as usize];
@@ -265,15 +279,15 @@ impl Peer {
         Ok(Action::Write(piece_data))
     }
 
-    pub fn parse_cancel(&mut self, msg: &[u8]) -> Result<Action, &'static str> {
+    pub fn parse_cancel(&mut self, msg: &[u8]) -> Result<Action, ParseError> {
         let piece = self.parse_piece_generic(msg);
         match self.request_queue.remove_item(&piece) {
             Some(_) => Ok(Action::None),
-            None => Err("Received cancel for piece not in queue"),
+            None => Err(parse_error!("Received cancel for piece not in queue")),
         }
     }
 
-    pub fn parse_port(&mut self) -> Result<Action, &'static str> {
+    pub fn parse_port(&mut self) -> Result<Action, ParseError> {
         unimplemented!();
         Ok(Action::None)
     }
@@ -344,24 +358,18 @@ impl Peer {
 
         // check message size
         if (msg.len() < ::HSLEN) {
-            return Err(ParseError::new(format!(
-                "Unexpected handshake length: {}",
-                msg.len()
-            )));
+            return Err(parse_error!("Unexpected handshake length: {}", msg.len()));
         }
 
         let pstrlen = msg[i];
         if pstrlen != ::PSTRLEN {
-            return Err(ParseError::new(format!("Unexpected pstrlen: {}", pstrlen)));
+            return Err(parse_error!("Unexpected pstrlen: {}", pstrlen));
         }
 
         i = i + 1;
         let pstr = &msg[i..i + pstrlen as usize];
         if from_utf8(pstr).unwrap() != ::PSTR {
-            return Err(ParseError::new(format!(
-                "Unexpected protocol string: {:?}",
-                pstr
-            )));
+            return Err(parse_error!("Unexpected protocol string: {:?}", pstr));
         }
 
         i = i + 8 + pstrlen as usize;
@@ -437,7 +445,7 @@ mod tests {
 
         let have = message!(5u32, 4u8, 0u32);
         assert_eq!(Peer::have(0), have);
-        assert_eq!(peer.parse_message(&have), Ok(Action::Have(0)));
+        assert_eq!(peer.parse_message(&have).unwrap(), Action::Have(0));
         assert_eq!(peer.bitfield.get(0).unwrap(), true);
 
         let bitfield = message!(5u32, 5u8, 0b01000000000000000000000000000001 as u32);
@@ -453,8 +461,11 @@ mod tests {
         let have = message!(5u32, 4u8, 32u32);
         assert_eq!(Peer::have(32), have);
         assert_eq!(
-            peer.parse_message(&have),
-            Err("Received have message with piece index that exceeds number of pieces")
+            peer.parse_message(&have).unwrap_err().description(),
+            format!(
+                "Received have message with piece index {} that exceeds number of pieces {}",
+                32, 32
+            )
         );
 
         let bitfield = message_from_bytes!(
@@ -463,8 +474,11 @@ mod tests {
             [0b01000000, 0b00000000, 0b00000000, 0b00000001, 0b10000000]
         );
         assert_eq!(
-            peer.parse_message(&bitfield),
-            Err("Received bitfield with length different from existing bitfield")
+            peer.parse_message(&bitfield).unwrap_err().description(),
+            format!(
+                "Received bitfield with length ({}) different from existing bitfield ({})",
+                40, 32
+            )
         );
         peer.bitfield = BitVec::from_elem(33, false);
         peer.parse_message(&bitfield).unwrap();
@@ -483,7 +497,7 @@ mod tests {
         let request = message!(13u32, 6u8, 0u32, 0u32, 16384u32);
 
         for i in 0..QUEUE_LENGTH - 1 {
-            assert_eq!(peer.parse_request(&request), Ok(Action::None));
+            assert_eq!(peer.parse_request(&request).unwrap(), Action::None);
         }
 
         peer.parse_request(&request);
@@ -509,7 +523,7 @@ mod tests {
         assert_eq!(Peer::piece(&piece_data), message);
 
         let result = peer.parse_message(&message);
-        assert_eq!(result, Ok(Action::Write(piece_data)));
+        assert_eq!(result.unwrap(), Action::Write(piece_data));
     }
 
     #[test]
