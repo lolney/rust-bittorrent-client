@@ -1,3 +1,5 @@
+use bittorrent::bittorrent::manager::ClientMsg;
+use bittorrent::bittorrent::manager::BidirectionalChannel;
 use std::hash::Hash;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -69,15 +71,18 @@ impl TableViewItem<TorrentColumn> for Info {
 }
 
 pub struct AsyncTableView<T: TableViewItem<H> + 'static, H: Eq + Hash + Copy + Clone + 'static> {
-    rx: Receiver<InfoMsg>,
+    comm: BidirectionalChannel<ClientMsg, InfoMsg>,
     table: TableView<T, H>,
     index_map: HashMap<TorrentHash, usize>,
 }
 
 impl<T: TableViewItem<H> + 'static, H: Eq + Hash + Copy + Clone + 'static> AsyncTableView<T, H> {
-    pub fn new(rx: Receiver<InfoMsg>, table: TableView<T, H>) -> AsyncTableView<T, H> {
+    pub fn new(
+        rx: BidirectionalChannel<ClientMsg, InfoMsg>,
+        table: TableView<T, H>,
+    ) -> AsyncTableView<T, H> {
         AsyncTableView {
-            rx: rx,
+            comm: rx,
             table: table,
             index_map: HashMap::new(),
         }
@@ -86,7 +91,7 @@ impl<T: TableViewItem<H> + 'static, H: Eq + Hash + Copy + Clone + 'static> Async
 
 impl View for AsyncTableView<Info, TorrentColumn> {
     fn layout(&mut self, vec2: Vec2) {
-        while let Ok(msg) = self.rx.try_recv() {
+        for msg in self.comm.try_iter() {
             match msg {
                 InfoMsg::All(vec) => {
                     self.index_map = vec.iter()

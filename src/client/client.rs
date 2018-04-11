@@ -57,9 +57,9 @@ pub fn run() {
     curs.add_global_callback('q', |s| s.quit());
 
     let mut manager = Rc::new(RefCell::new(Manager::new()));
-    let rx = manager.borrow_mut().handle();
+    let comm = manager.borrow_mut().handle();
 
-    let async_table = AsyncTableView::new(rx, table::new());
+    let async_table = AsyncTableView::new(comm, table::new());
     let actions = LinearLayout::horizontal()
         .child(Button::new("New", move |_| add(manager.clone())))
         .child(Button::new("Remove", remove))

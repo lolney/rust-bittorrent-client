@@ -1,5 +1,6 @@
 use std::collections::HashSet;
-use bittorrent::{Hash, ParseError, Piece, PieceData, metainfo::BTFile, metainfo::MetaInfo};
+use bittorrent::{Hash, ParseError, Piece, PieceData, manager::Status, metainfo::BTFile,
+                 metainfo::MetaInfo};
 use std::collections::{HashMap, VecDeque};
 use bit_vec::BitVec;
 use std::io::Error as IOError;
@@ -35,6 +36,7 @@ pub struct Torrent {
     bitfield: BitVec, // pieces we've downloaded
     map: HashMap<u32, Vec<DLMarker>>, // Piece indices -> indices indicated downloaded parts
     files: Vec<BTFile>,               // contains path (possibly renamed from metainfo) info
+    status: Status,
 
     // Runtime info:
     #[serde(skip)]
@@ -230,6 +232,7 @@ impl Torrent {
                     outstanding_requests: Default::default(),
                     dl_rate: Rate::new(),
                     ul_rate: Rate::new(),
+                    status: Status::Running,
                 })
             }
             Err(e) => Err(ParseError::from_parse_string(
@@ -251,6 +254,7 @@ impl Torrent {
         let mut torrent = Torrent::_new(infofile, download_dir)?;
         let npieces = torrent.metainfo.npieces();
         torrent.bitfield = BitVec::from_elem(npieces as usize, true);
+        torrent.status = Status::Complete;
         if let Err(e) = torrent.verify_files() {
             Err(ParseError::from_parse("Failed to create torrent", e))
         } else {
@@ -278,12 +282,41 @@ impl Torrent {
         return Ok(());
     }
 
+    /// `pause`: true to pause, or false to unpause
+    /// Returns true if status is changed; else false
+    pub fn pause(&mut self, pause: bool) -> bool {
+        if pause {
+            if self.status != Status::Paused {
+                self.status = Status::Paused;
+                true
+            } else {
+                false
+            }
+        } else {
+            if self.status == Status::Paused {
+                if self.remaining() == 0 {
+                    self.status = Status::Complete;
+                    true
+                } else {
+                    self.status = Status::Running;
+                    true
+                }
+            } else {
+                false
+            }
+        }
+    }
+
     pub fn trackers(&self) -> Vec<String> {
         self.metainfo.trackers()
     }
 
     pub fn name(&self) -> &String {
         self.metainfo.info().file_info.name()
+    }
+
+    pub fn status(&self) -> Status {
+        self.status
     }
 
     pub fn piece_length(&self) -> i64 {
@@ -311,6 +344,22 @@ impl Torrent {
         let dl = self.downloaded();
         let size = self.metainfo.total_size();
         size - dl
+    }
+
+    pub fn set_complete(&mut self) -> Result<(), String> {
+        if self.remaining() == 0 {
+            if self.status == Status::Running {
+                self.status = Status::Complete;
+                Ok(())
+            } else {
+                Err(format!(
+                    "Tried to set torrent as complete, but its status is {:?}",
+                    self.status
+                ))
+            }
+        } else {
+            Err("Tried to set torrent as complete, but it's not complete".to_string())
+        }
     }
 
     /// Returns the total size in bytes of the torrent
@@ -687,6 +736,31 @@ mod tests {
     use bittorrent::{Piece, metainfo::BTFile};
     use bittorrent::utils::gen_random_bytes;
     use std::path::PathBuf;
+
+    fn _test_pause(torrent: &mut Torrent, begin: Status) {
+        assert_eq!(torrent.status, begin);
+        assert_eq!(torrent.pause(true), true);
+        assert_eq!(torrent.status, Status::Paused);
+        assert_eq!(torrent.pause(true), false);
+        assert_eq!(torrent.status, Status::Paused);
+        assert_eq!(torrent.pause(false), true);
+        assert_eq!(torrent.status, begin);
+        assert_eq!(torrent.pause(false), false);
+        assert_eq!(torrent.status, begin);
+    }
+
+    #[test]
+    fn test_pause() {
+        // Initialize, pause, then unpause
+        _test_pause(&mut Torrent::new(::TEST_FILE, "").unwrap(), Status::Running);
+        _test_pause(
+            &mut Torrent::from_downloaded(
+                ::TEST_FILE,
+                &format!("{}/{}", ::READ_DIR, "valid_torrent"),
+            ).unwrap(),
+            Status::Complete,
+        );
+    }
 
     #[test]
     fn test_piece_queue() {

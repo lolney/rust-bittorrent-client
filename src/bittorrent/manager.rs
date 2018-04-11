@@ -1,10 +1,10 @@
 extern crate core;
 
 use std::sync::mpsc::SendError;
-use bittorrent::{metainfo, torrent, Hash, ParseError, Piece, peer::Action, peer::Peer,
-                 peer::PeerInfo, torrent::Torrent, tracker::Tracker};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::time::{Duration, Instant, SystemTime};
+use bittorrent::{torrent, Hash, ParseError, Piece, peer::Action, peer::Peer, peer::PeerInfo,
+                 torrent::Torrent, tracker::Tracker};
+use std::net::{Shutdown, TcpListener, TcpStream};
+use std::time::{Duration, Instant};
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -20,9 +20,9 @@ use bit_vec::BitVec;
 use std::usize::MAX;
 use log::error;
 use std::io::Error as IOError;
-use tokio_core::reactor::{Core, Handle};
+use tokio_core::reactor::Core;
 
-use futures::prelude::{async, Future, Sink, Stream};
+use futures::prelude::Stream;
 
 /// This module contains the main point of interaction with the library, `Manager`.
 /// Calling `Manager::new().handle()` will spawn the `Controller` thread,
@@ -70,7 +70,10 @@ macro_rules! acquire_torrent_lock {
     ($torrents:ident,$peer:ident,$torrent:ident) => (
         let mut torrents = $torrents.lock().expect("Torrents mutex poisoned");
         let hash = $peer.peer_info.info_hash;
-        let mut $torrent = torrents.get_mut(&hash).expect("Expected torrent missing");
+        let mut $torrent = match torrents.get_mut(&hash) {
+            Some(v) => Ok(v),
+            None => Err(parse_error!("Torrent has been removed "))
+        }?;
     );
 }
 
@@ -120,7 +123,7 @@ impl Message for ManagerUpdate {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum Status {
     Paused,
     Running,
@@ -172,19 +175,36 @@ impl PartialOrd for Status {
     }
 }
 
+pub enum ClientMsg {
+    Pause(Hash),
+    Resume(Hash),
+    Remove(Hash),
+    Disconnect,
+}
+
+impl Message for ClientMsg {
+    fn get_disconnected() -> Self {
+        ClientMsg::Disconnect
+    }
+
+    fn get_empty() -> Self {
+        ClientMsg::Disconnect
+    }
+}
+
 pub struct NewPeerMsg {
     peer_id: Hash,
     info_hash: Hash,
-    comm: BidirectionalComm<ManagerUpdate, PeerUpdate>,
+    comm: BidirectionalChannel<ManagerUpdate, PeerUpdate>,
     priority: PeerPriority,
 }
 
-trait Message {
+pub trait Message {
     fn get_disconnected() -> Self;
     fn get_empty() -> Self;
 }
 
-struct BidirectionalComm<S, R>
+pub struct BidirectionalChannel<S, R>
 where
     S: Message,
     R: Message,
@@ -193,21 +213,21 @@ where
     recv: mpsc::Receiver<R>,
 }
 
-impl<S, R> BidirectionalComm<S, R>
+impl<S, R> BidirectionalChannel<S, R>
 where
     S: Message,
     R: Message,
 {
-    pub fn create() -> (BidirectionalComm<R, S>, BidirectionalComm<S, R>) {
+    pub fn create() -> (BidirectionalChannel<R, S>, BidirectionalChannel<S, R>) {
         let (s_s, s_r) = mpsc::channel();
         let (r_s, r_r) = mpsc::channel();
 
         (
-            BidirectionalComm {
+            BidirectionalChannel {
                 send: s_s,
                 recv: r_r,
             },
-            BidirectionalComm {
+            BidirectionalChannel {
                 send: r_s,
                 recv: s_r,
             },
@@ -522,13 +542,10 @@ impl Manager {
         mut peer: Peer,
         mut stream: TcpStream,
         torrents: Arc<Mutex<HashMap<Hash, Torrent>>>,
-        comm: BidirectionalComm<PeerUpdate, ManagerUpdate>,
-    ) {
+        comm: BidirectionalChannel<PeerUpdate, ManagerUpdate>,
+    ) -> Result<(), ParseError> {
         let mut buf = [0; ::MSG_SIZE];
         let mut download_size = 0;
-        let start = Instant::now(); // TODO: consider abstracting this away?
-                                    // macro for (task, period)
-        let ten_secs = Duration::from_secs(10);
 
         stream
             .set_read_timeout(Some(Duration::new(::READ_TIMEOUT, 0)))
@@ -541,7 +558,9 @@ impl Manager {
         // Begin by sending our bitfield
         {
             acquire_torrent_lock!(torrents, peer, torrent);
-            stream.write(&Peer::bitfield(&torrent.bitfield()));
+            if let Err(e) = stream.write(&Peer::bitfield(&torrent.bitfield())) {
+                error!("Error sending initial bitfield to peer {}", peer.peer_id());
+            }
         }
 
         loop {
@@ -669,7 +688,7 @@ impl Manager {
                         "Manager has ordered disconnect from peer {}",
                         peer.peer_id()
                     );
-                    return;
+                    return Ok(());
                 }
                 ManagerUpdate::Have(index) => {
                     stream.write(Peer::have(index).as_slice());
@@ -683,9 +702,9 @@ impl Manager {
         peer: &Peer,
         npeers: Arc<AtomicUsize>,
         manager_send: &Sender<NewPeerMsg>,
-    ) -> BidirectionalComm<PeerUpdate, ManagerUpdate> {
+    ) -> BidirectionalChannel<PeerUpdate, ManagerUpdate> {
         npeers.fetch_add(1, AtomicOrdering::SeqCst);
-        let (manager_comm, peer_comm) = BidirectionalComm::create();
+        let (manager_comm, peer_comm) = BidirectionalChannel::create();
 
         manager_send
             .send(NewPeerMsg {
@@ -723,7 +742,10 @@ impl Manager {
                             let peer_comm = Manager::register_peer(&peer, npeers, &manager_send);
                             thread::spawn(move || {
                                 // manages new connection
-                                Manager::receive(peer, stream, torrents, peer_comm);
+                                if let Err(e) = Manager::receive(peer, stream, torrents, peer_comm)
+                                {
+                                    warn!("Peer shut down with error: {}", e);
+                                }
                             });
                         }
                         Err(err) => {
@@ -741,7 +763,7 @@ impl Manager {
 
     /// Entry point. Only meant to be called once.
     /// Returns channel for receiving progress updates.
-    pub fn handle(&mut self) -> mpsc::Receiver<InfoMsg> {
+    pub fn handle(&mut self) -> BidirectionalChannel<ClientMsg, InfoMsg> {
         let torrents = self.torrents.clone();
 
         let (manager_send, manager_recv) = mpsc::channel();
@@ -773,7 +795,7 @@ impl Manager {
 
         let torrents = self.torrents.clone();
         let npeers = self.npeers.clone();
-        let (info_send, info_recv) = mpsc::channel();
+        let (info_send, info_recv) = BidirectionalChannel::create();
         thread::spawn(move || {
             Controller::new(manager_recv, torrents, npeers, info_send).run_loop();
         });
@@ -792,9 +814,9 @@ struct Controller {
     recv: mpsc::Receiver<NewPeerMsg>,
     torrents: Arc<Mutex<HashMap<Hash, Torrent>>>,
     npeers: Arc<AtomicUsize>,
-    send: mpsc::Sender<InfoMsg>,
+    client_comm: BidirectionalChannel<InfoMsg, ClientMsg>,
     peer_priority: PriorityQueue<Hash, PeerPriority>,
-    peers: HashMap<Hash, BidirectionalComm<ManagerUpdate, PeerUpdate>>,
+    peers: HashMap<Hash, BidirectionalChannel<ManagerUpdate, PeerUpdate>>,
     bitfields: HashMap<Hash, BitVec>,
 }
 
@@ -803,13 +825,13 @@ impl Controller {
         recv: mpsc::Receiver<NewPeerMsg>,
         torrents: Arc<Mutex<HashMap<Hash, Torrent>>>,
         npeers: Arc<AtomicUsize>,
-        send: mpsc::Sender<InfoMsg>,
+        client_comm: BidirectionalChannel<InfoMsg, ClientMsg>,
     ) -> Controller {
         Controller {
             recv: recv,
             torrents: torrents,
             npeers: npeers,
-            send: send,
+            client_comm: client_comm,
             peer_priority: PriorityQueue::new(),
             peers: HashMap::new(),
             bitfields: HashMap::new(),
@@ -820,10 +842,14 @@ impl Controller {
     // Task: returns Option<Update>
     pub fn run_loop(&mut self) {
         let mut start = Instant::now();
-        let ten_secs = Duration::from_secs(5);
+        let ten_secs = Duration::from_secs(2);
 
         self.choke();
         loop {
+            if self.recv_client() {
+                break;
+            }
+
             /// Send updates at 1-second interval
             self.send_update();
 
@@ -839,6 +865,56 @@ impl Controller {
                 start = Instant::now();
             }
         }
+    }
+
+    fn recv_client(&mut self) -> bool {
+        for msg in self.client_comm.try_iter() {
+            match msg {
+                ClientMsg::Pause(info_hash) => {
+                    let mut torrents = torrents!(self);
+                    match torrents.get_mut(&info_hash) {
+                        Some(ref mut torrent) => {
+                            if torrent.pause(true) {
+                                info!("Paused torrent")
+                            } else {
+                                error!("Torrent already paused");
+                            }
+                        }
+                        None => {
+                            error!("Received request to pause torrent that does not exist");
+                        }
+                    }
+                }
+                ClientMsg::Resume(info_hash) => {
+                    let mut torrents = torrents!(self);
+                    match torrents.get_mut(&info_hash) {
+                        Some(ref mut torrent) => {
+                            if torrent.pause(false) {
+                                info!("Resumed torrent")
+                            } else {
+                                error!("Torrent already running");
+                            }
+                        }
+                        None => {
+                            error!("Received request to resume torrent that does not exist");
+                        }
+                    }
+                }
+                ClientMsg::Remove(info_hash) => {
+                    // TODO: send cancelations
+                    let mut torrents = torrents!(self);
+                    if let Some(_) = torrents.remove(&info_hash) {
+                        // TODO: remove
+                    } else {
+                        error!("Tried to remove torrent that does not exist");
+                    }
+                }
+                ClientMsg::Disconnect => {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /*
@@ -867,7 +943,10 @@ impl Controller {
 
     fn make_requests(&mut self) {
         let mut torrents = torrents!(self);
-        for (info_hash, mut torrent) in torrents.iter_mut() {
+        for (info_hash, mut torrent) in torrents
+            .iter_mut()
+            .filter(|t| t.1.status() == Status::Running)
+        {
             // Select eligible peers
             let peers_iter: Vec<Hash> = self.peer_priority
                 .iter()
@@ -909,11 +988,11 @@ impl Controller {
         let mut torrents = torrents!(self);
         let out = torrents
             .iter_mut()
-            .map(|(info_hash, t)| self.create_info(info_hash, t, Status::Running))
+            .map(|(info_hash, t)| self.create_info(info_hash, t))
             .collect();
-        self.send
-            .send(InfoMsg::All(out))
-            .map_err(|e| error!("Info update failed with error: {}", e));
+        if let Err(e) = self.client_comm.send(InfoMsg::All(out)) {
+            error!("Info update failed with error: {}", e);
+        }
     }
 
     fn try_recv_new_peer(&mut self) {
@@ -999,11 +1078,15 @@ impl Controller {
                 info!("{} bytes remaining", remaining);
                 if remaining == 0 {
                     info!("Torrent \"{}\" complete", torrent.name());
-                    self.send.send(InfoMsg::One(self.create_info(
-                        &info_hash,
-                        &mut torrent,
-                        Status::Complete,
-                    )));
+                    match torrent.set_complete() {
+                        Ok(()) => {
+                            self.client_comm
+                                .send(InfoMsg::One(self.create_info(&info_hash, &mut torrent)));
+                        }
+                        Err(e) => {
+                            error!("Error while setting torrent as complete: {}", e);
+                        }
+                    }
                 }
             }
             &PeerUpdate::Bitfield(ref _bitfield) => {
@@ -1026,11 +1109,11 @@ impl Controller {
         }
     }
 
-    fn create_info(&self, info_hash: &Hash, torrent: &mut Torrent, status: Status) -> Info {
+    fn create_info(&self, info_hash: &Hash, torrent: &mut Torrent) -> Info {
         Info {
             info_hash: info_hash.clone(),
             name: torrent.name().to_string(),
-            status: status,
+            status: torrent.status(),
             progress: torrent.downloaded() as f32 / torrent.size() as f32,
             up: torrent.upload_rate(),
             down: torrent.download_rate(),
@@ -1046,15 +1129,19 @@ mod tests {
     use bittorrent::tracker::tests::{default_tracker, run_server};
     use bittorrent::tracker::TrackerResponse;
 
+    /// Allows access to all these variables without copy-pasting the setup every time
     macro_rules! controller_setup {
         ($controller:ident,$manager_send:ident,$npeers:ident,$info_hash:ident,$npieces:ident) => (
+            controller_setup!($controller, $manager_send,$npeers, $info_hash, $npieces, client, torrents);
+        );
+        ($controller:ident,$manager_send:ident,$npeers:ident,$info_hash:ident,$npieces:ident,$client:ident,$torrents:ident) => (
             let ($manager_send, manager_recv) = mpsc::channel();
-            let torrents = Arc::new(Mutex::new(HashMap::new()));
+            let $torrents = Arc::new(Mutex::new(HashMap::new()));
             let $npeers = Arc::new(AtomicUsize::new(0));
-            let (info_send, info_recv) = mpsc::channel();
+            let (info_send, $client) = BidirectionalChannel::create();
 
             let mut $controller =
-                Controller::new(manager_recv, torrents.clone(), $npeers.clone(), info_send);
+                Controller::new(manager_recv, $torrents.clone(), $npeers.clone(), info_send);
 
             // Add torrent
             let torrent = Torrent::new(::TEST_FILE, ::DL_DIR).unwrap();
@@ -1063,16 +1150,64 @@ mod tests {
             let $info_hash = torrent.info_hash().clone();
             let npieces = torrent.npieces();
             {
-                let mut ts = torrents.lock().unwrap();
+                let mut ts = $torrents.lock().unwrap();
                 ts.insert(torrent.info_hash(), torrent);
             }
         );
     }
 
-    fn create_manager(port: u16) -> (Manager, mpsc::Receiver<InfoMsg>) {
+    macro_rules! get_torrent {
+        ($torrents:ident, $info_hash:expr, $torrent:ident) => (
+            let mut ts = $torrents.lock().unwrap();
+            let mut $torrent = ts.get($info_hash).unwrap();
+        )
+    }
+
+    fn create_manager(port: u16) -> (Manager, BidirectionalChannel<ClientMsg, InfoMsg>) {
         let mut manager = Manager::new().port(port);
-        let receiver = manager.handle();
-        return (manager, receiver);
+        let comm = manager.handle();
+        return (manager, comm);
+    }
+
+    #[test]
+    fn test_client_msgs() {
+        controller_setup!(
+            controller,
+            manager_send,
+            npeers,
+            info_hash,
+            npieces,
+            client,
+            torrents
+        );
+        // Send pause; make sure torrent is paused
+        client.send(ClientMsg::Pause(info_hash));
+        controller.recv_client();
+        {
+            get_torrent!(torrents, &info_hash, torrent);
+            assert_eq!(torrent.status(), Status::Paused);
+        }
+        // Send resume; make sure it's resumed
+        client.send(ClientMsg::Resume(info_hash));
+        controller.recv_client();
+        {
+            get_torrent!(torrents, &info_hash, torrent);
+            assert_eq!(torrent.status(), Status::Running);
+        }
+        // Send resume again; still resumed
+        client.send(ClientMsg::Resume(info_hash));
+        controller.recv_client();
+        {
+            get_torrent!(torrents, &info_hash, torrent);
+            assert_eq!(torrent.status(), Status::Running);
+        }
+        // Remove it
+        client.send(ClientMsg::Remove(info_hash));
+        controller.recv_client();
+        {
+            let mut ts = torrents.lock().unwrap();
+            assert_eq!(ts.get(&info_hash), None);
+        }
     }
 
     #[test]
@@ -1097,8 +1232,12 @@ mod tests {
 
         loop {
             match leecher_rx.recv() {
-                Ok(InfoMsg::One(info)) => match info.status {
-                    Status::Complete => return,
+                InfoMsg::One(info) => match info.status {
+                    Status::Complete => {
+                        leecher_rx.send(ClientMsg::Disconnect);
+                        seeder_rx.send(ClientMsg::Disconnect);
+                        return;
+                    }
                     _ => (),
                 },
                 _ => (),
