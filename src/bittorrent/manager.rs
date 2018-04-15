@@ -810,6 +810,17 @@ macro_rules! torrents {
     }
 }
 
+/// Removes the peer specified by `peer_id`.
+/// This is a macro to avoid annoying the borrow checker.
+macro_rules! remove_peer {
+    ($self: ident, $peer_id: ident) => {
+        $self.npeers.fetch_sub(1, AtomicOrdering::SeqCst);
+        remove(&mut $self.peer_priority, $peer_id);
+        $self.bitfields.remove($peer_id);
+        $self.peers.remove($peer_id);
+    }
+}
+
 struct Controller {
     recv: mpsc::Receiver<NewPeerMsg>,
     torrents: Arc<Mutex<HashMap<Hash, Torrent>>>,
@@ -867,6 +878,17 @@ impl Controller {
         }
     }
 
+    fn filter_priority<F>(&self, filter: F) -> Vec<Hash>
+    where
+        F: FnMut(&(&Hash, &PeerPriority)) -> bool,
+    {
+        self.peer_priority
+            .iter()
+            .filter(filter)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
     fn recv_client(&mut self) -> bool {
         for msg in self.client_comm.try_iter() {
             match msg {
@@ -901,10 +923,16 @@ impl Controller {
                     }
                 }
                 ClientMsg::Remove(info_hash) => {
-                    // TODO: send cancelations
                     let mut torrents = torrents!(self);
                     if let Some(_) = torrents.remove(&info_hash) {
-                        // TODO: remove
+                        let ids = self.filter_priority(|&(_, peer)| peer.info_hash == info_hash);
+                        for peer_id in ids.iter() {
+                            self.peers
+                                .get_mut(peer_id)
+                                .expect("Peer should be in peers list")
+                                .send(ManagerUpdate::Disconnect);
+                            remove_peer!(self, peer_id);
+                        }
                     } else {
                         error!("Tried to remove torrent that does not exist");
                     }
@@ -1102,9 +1130,7 @@ impl Controller {
                 }
             }
             &PeerUpdate::Disconnect => {
-                self.npeers.fetch_sub(1, AtomicOrdering::SeqCst);
-                self.peers.remove(peer_id);
-                remove(&mut self.peer_priority, peer_id);
+                remove_peer!(self, peer_id);
             }
         }
     }
