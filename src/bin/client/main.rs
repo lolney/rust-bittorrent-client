@@ -5,9 +5,10 @@ extern crate cursive_table_view;
 extern crate log;
 extern crate rand;
 
-pub mod client;
+mod client;
+mod table;
 
-use client::client as cl;
+use client as cl;
 
 fn main() {
     cl::run();

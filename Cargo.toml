@@ -20,6 +20,8 @@ cursive_table_view = "0.4.2"
 futures-await = "0.1"
 serde = "1.0.3"
 serde_derive = "1.0"
+rocket = "0.3.8"
+rocket_codegen = "0.3.8"
 
 [lib]
 name = "bittorrent"
@@ -27,4 +29,8 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "rust-bittorrent-client"
-path = "src/main.rs"
+path = "src/bin/client/main.rs"
+
+[[bin]]
+name = "rust-bittorrent-webserver"
+path = "src/bin/webserver/main.rs"
