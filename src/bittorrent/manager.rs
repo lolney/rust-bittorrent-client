@@ -130,7 +130,7 @@ pub enum Status {
     Complete,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Info {
     pub info_hash: Hash,
     pub name: String,
@@ -141,7 +141,7 @@ pub struct Info {
     pub npeers: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InfoMsg {
     All(Vec<Info>),
     One(Info),

@@ -1,13 +1,13 @@
-use std::collections::HashMap;
-use std::error::Error;
-use std::path::Path;
-use std::fmt::Display;
-use std::fmt;
-use std::io::Error as IOError;
 use hyper::error::Error as HyperError;
 use hyper::error::UriError;
-use std::default::Default;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::default::Default;
+use std::error::Error;
+use std::fmt;
+use std::fmt::Display;
+use std::io::Error as IOError;
+use std::path::Path;
 
 /// Describes a decoded benencodable object
 #[derive(PartialEq, Debug, Clone)]
@@ -27,11 +27,25 @@ pub enum ParseError {
 }
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug, Default, Copy, Serialize, Deserialize)]
-pub struct Hash([u8; 20]);
+pub struct Hash(pub [u8; 20]);
 
 impl From<[u8; 20]> for Hash {
     fn from(bytes: [u8; 20]) -> Self {
         Hash(bytes)
+    }
+}
+
+impl From<String> for Hash {
+    fn from(string: String) -> Self {
+        let mut arr: [u8; 20] = [0; 20];
+        let bytes = string.as_bytes();
+        if bytes.len() >= 20 {
+            arr.copy_from_slice(&bytes[..20]);
+        } else {
+            let (mut left, _) = arr.split_at_mut(bytes.len());
+            left.copy_from_slice(&bytes);
+        }
+        Hash(arr)
     }
 }
 
@@ -186,8 +200,8 @@ impl<T: Bencodable> Keys<T> for T {
 // convert _ to space
 macro_rules! mod_stringify {
     ($key:ident) => {
-        &stringify!($key).replace('_'," ")
-    }
+        &stringify!($key).replace('_', " ")
+    };
 }
 
 /// Used to construct a struct from entries in a BencodeT Hashmap
@@ -494,11 +508,11 @@ pub struct PieceData {
     data: Vec<u8>,
 }
 
-mod bencoder;
 mod bedecoder;
-mod utils;
-mod torrent;
-mod peer;
-mod tracker;
-mod metainfo;
+mod bencoder;
 pub mod manager;
+mod metainfo;
+mod peer;
+mod torrent;
+mod tracker;
+mod utils;
