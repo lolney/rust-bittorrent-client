@@ -7,10 +7,14 @@ use bittorrent::bittorrent::Hash;
 use rocket_contrib::json::Value;
 use rocket_contrib::Json;
 
+use rocket::http::Method;
+use rocket_cors::{AllowedHeaders, AllowedOrigins};
+
 extern crate bittorrent;
 extern crate rocket;
 #[macro_use]
 extern crate rocket_contrib;
+extern crate rocket_cors;
 
 fn example_torrent() -> Info {
     Info {
@@ -42,7 +46,18 @@ fn torrent(info_hash: String) -> Json<Info> {
 }
 
 fn main() {
+    let (allowed_origins, failed_origins) =
+        AllowedOrigins::some(&["null", "http://localhost:8080"]);
+    let options = rocket_cors::Cors {
+        allowed_origins: allowed_origins,
+        allowed_methods: vec![Method::Get].into_iter().map(From::from).collect(),
+        allowed_headers: AllowedHeaders::some(&["Authorization", "Accept"]),
+        allow_credentials: true,
+        ..Default::default()
+    };
+
     rocket::ignite()
         .mount("/", routes![hello, torrents, torrent])
+        .attach(options)
         .launch();
 }

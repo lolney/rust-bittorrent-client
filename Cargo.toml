@@ -24,6 +24,7 @@ serde_derive = "1.0"
 rocket = "0.3.8"
 rocket_codegen = "0.3.8"
 rocket_contrib = "0.3.8"
+rocket_cors = { git = "https://github.com/lawliet89/rocket_cors", branch = "master" }
 
 [lib]
 name = "bittorrent"
