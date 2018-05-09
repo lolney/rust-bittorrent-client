@@ -1,13 +1,11 @@
 #![feature(plugin)]
 #![plugin(rocket_codegen)]
 
-use bittorrent::bittorrent::manager::Info;
-use bittorrent::bittorrent::manager::Status;
+use bittorrent::bittorrent::manager::{Info, Status};
 use bittorrent::bittorrent::Hash;
+use rocket::http::Method;
 use rocket_contrib::json::Value;
 use rocket_contrib::Json;
-
-use rocket::http::Method;
 use rocket_cors::{AllowedHeaders, AllowedOrigins};
 
 extern crate bittorrent;
@@ -15,6 +13,8 @@ extern crate rocket;
 #[macro_use]
 extern crate rocket_contrib;
 extern crate rocket_cors;
+
+mod torrent_state;
 
 fn example_torrent() -> Info {
     Info {
@@ -28,16 +28,9 @@ fn example_torrent() -> Info {
     }
 }
 
-#[get("/hello/<name>/<age>")]
-fn hello(name: String, age: u8) -> String {
-    format!("Hello, {} year old named {}!", age, name)
-}
-
 #[get("/torrents")]
 fn torrents() -> Json<Value> {
-    Json(
-        json!({ "torrents": [{"name": "Example", "info_hash": "XYZ", "status": "Running", "up": 100, "down": 50, "npeers": 5}] }),
-    )
+    Json(json!({ "torrents": [example_torrent()] }))
 }
 
 #[get("/torrents/<info_hash>")]
@@ -57,7 +50,7 @@ fn main() {
     };
 
     rocket::ignite()
-        .mount("/", routes![hello, torrents, torrent])
+        .mount("/", routes![torrents, torrent])
         .attach(options)
         .launch();
 }
