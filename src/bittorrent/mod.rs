@@ -1,5 +1,7 @@
 use hyper::error::Error as HyperError;
 use hyper::error::UriError;
+use rand;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::default::Default;
@@ -71,6 +73,17 @@ impl Display for Hash {
             })
             .collect();
         write!(f, "{}", string)
+    }
+}
+
+impl Hash {
+    pub fn random() -> Hash {
+        let mut id: Hash = Hash([0; 20]);
+        let mut rng = rand::thread_rng();
+        for x in id.0.iter_mut() {
+            *x = rng.gen();
+        }
+        return id;
     }
 }
 

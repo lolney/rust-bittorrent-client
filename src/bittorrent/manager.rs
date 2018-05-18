@@ -1,26 +1,27 @@
 extern crate core;
 
-use std::sync::mpsc::SendError;
-use bittorrent::{torrent, Hash, ParseError, Piece, peer::Action, peer::Peer, peer::PeerInfo,
-                 torrent::Torrent, tracker::Tracker};
-use std::net::{Shutdown, TcpListener, TcpStream};
-use std::time::{Duration, Instant};
+use bit_vec::BitVec;
+use bittorrent::{peer::Action, peer::Peer, peer::PeerInfo, torrent, torrent::Torrent,
+                 tracker::Tracker, Hash, ParseError, Piece};
+use log::error;
+use priority_queue::PriorityQueue;
+use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::error::Error;
-use std::sync::{Arc, Mutex};
+use std::fmt;
+use std::io::Error as IOError;
+use std::io::{ErrorKind, Read, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::mpsc;
+use std::sync::mpsc::SendError;
 use std::sync::mpsc::Sender;
-use priority_queue::PriorityQueue;
-use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::io::{ErrorKind, Read, Write};
-use std::fmt;
-use std::cmp::Ordering;
-use bit_vec::BitVec;
+use std::time::{Duration, Instant};
 use std::usize::MAX;
-use log::error;
-use std::io::Error as IOError;
 use tokio_core::reactor::Core;
+use tokio_timer::Interval;
 
 use futures::prelude::Stream;
 
@@ -67,14 +68,14 @@ impl From<ParseError> for NetworkError {
 }
 
 macro_rules! acquire_torrent_lock {
-    ($torrents:ident,$peer:ident,$torrent:ident) => (
+    ($torrents:ident, $peer:ident, $torrent:ident) => {
         let mut torrents = $torrents.lock().expect("Torrents mutex poisoned");
         let hash = $peer.peer_info.info_hash;
         let mut $torrent = match torrents.get_mut(&hash) {
             Some(v) => Ok(v),
-            None => Err(parse_error!("Torrent has been removed "))
+            None => Err(parse_error!("Torrent has been removed ")),
         }?;
-    );
+    };
 }
 
 /// Instead of locking the peers data structure
@@ -130,7 +131,7 @@ pub enum Status {
     Complete,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Info {
     pub info_hash: Hash,
     pub name: String,
@@ -805,20 +806,20 @@ impl Manager {
 }
 
 macro_rules! torrents {
-    ($self: ident) => {
+    ($self:ident) => {
         $self.torrents.lock().expect("Torrents mutex poisoned");
-    }
+    };
 }
 
 /// Removes the peer specified by `peer_id`.
 /// This is a macro to avoid annoying the borrow checker.
 macro_rules! remove_peer {
-    ($self: ident, $peer_id: ident) => {
+    ($self:ident, $peer_id:ident) => {
         $self.npeers.fetch_sub(1, AtomicOrdering::SeqCst);
         remove(&mut $self.peer_priority, $peer_id);
         $self.bitfields.remove($peer_id);
         $self.peers.remove($peer_id);
-    }
+    };
 }
 
 struct Controller {
@@ -829,6 +830,82 @@ struct Controller {
     peer_priority: PriorityQueue<Hash, PeerPriority>,
     peers: HashMap<Hash, BidirectionalChannel<ManagerUpdate, PeerUpdate>>,
     bitfields: HashMap<Hash, BitVec>,
+}
+
+struct Timers {
+    timers : Vec<Timer>,
+    base : Duration,
+}
+
+impl Timers {
+    
+    fn new(base: Duration) -> Timers {
+        Timers {
+            timers: Vec::new(),
+            base: base,
+        }
+    }
+
+    pub fn add<F>(&mut self, duration: Duration, task: F) -> Result<(), &'static str>
+        where F: Fn() -> bool
+    {
+        if duration % base != 0 {
+            Err("Duration must be a multiple of base")
+        } else {
+            timers.add(Timer(duration, task));
+            Ok(())
+        }
+    }
+
+    pub fn loop(&mut self) {
+        loop {
+            thread::sleep(base);
+            if self.tick() {
+                break;
+            }
+        }
+    }
+
+    fn tick(&mut self) -> bool {
+        for timer in self.timers.iter_mut() {
+            if timer.tick(base) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+}
+
+struct Timer<F> 
+    where F: Fn() -> bool 
+{
+    base : Duration,
+    remaining : Duration,
+    task: F,
+}
+
+impl Timer {
+
+    fn new(duration: Duration, task: Fn -> bool) {
+        Timer {
+            base: duration,
+            remaining: duration,
+            task: task,
+        }
+    }
+    
+    pub fn tick(&mut self, delta: Duration) -> bool {
+
+        self.remaining.sub(delta);
+
+        if self.duration <= 0 {
+            self.remaining = self.base;
+            return self.task();
+        } else {
+            return false;
+        }
+    }
 }
 
 impl Controller {
@@ -1151,16 +1228,34 @@ impl Controller {
 #[cfg(test)]
 mod tests {
     use bittorrent::manager::*;
-    use env_logger;
     use bittorrent::tracker::tests::{default_tracker, run_server};
     use bittorrent::tracker::TrackerResponse;
+    use env_logger;
 
     /// Allows access to all these variables without copy-pasting the setup every time
     macro_rules! controller_setup {
-        ($controller:ident,$manager_send:ident,$npeers:ident,$info_hash:ident,$npieces:ident) => (
-            controller_setup!($controller, $manager_send,$npeers, $info_hash, $npieces, client, torrents);
-        );
-        ($controller:ident,$manager_send:ident,$npeers:ident,$info_hash:ident,$npieces:ident,$client:ident,$torrents:ident) => (
+        (
+            $controller:ident, $manager_send:ident, $npeers:ident, $info_hash:ident, $npieces:ident
+        ) => {
+            controller_setup!(
+                $controller,
+                $manager_send,
+                $npeers,
+                $info_hash,
+                $npieces,
+                client,
+                torrents
+            );
+        };
+        (
+            $controller:ident,
+            $manager_send:ident,
+            $npeers:ident,
+            $info_hash:ident,
+            $npieces:ident,
+            $client:ident,
+            $torrents:ident
+        ) => {
             let ($manager_send, manager_recv) = mpsc::channel();
             let $torrents = Arc::new(Mutex::new(HashMap::new()));
             let $npeers = Arc::new(AtomicUsize::new(0));
@@ -1179,14 +1274,14 @@ mod tests {
                 let mut ts = $torrents.lock().unwrap();
                 ts.insert(torrent.info_hash(), torrent);
             }
-        );
+        };
     }
 
     macro_rules! get_torrent {
-        ($torrents:ident, $info_hash:expr, $torrent:ident) => (
+        ($torrents:ident, $info_hash:expr, $torrent:ident) => {
             let mut ts = $torrents.lock().unwrap();
             let mut $torrent = ts.get($info_hash).unwrap();
-        )
+        };
     }
 
     fn create_manager(port: u16) -> (Manager, BidirectionalChannel<ClientMsg, InfoMsg>) {

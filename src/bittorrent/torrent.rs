@@ -1,21 +1,21 @@
-use std::collections::HashSet;
-use bittorrent::{Hash, ParseError, Piece, PieceData, manager::Status, metainfo::BTFile,
-                 metainfo::MetaInfo};
-use std::collections::{HashMap, VecDeque};
 use bit_vec::BitVec;
+use bittorrent::{manager::Status, metainfo::BTFile, metainfo::MetaInfo, Hash, ParseError, Piece,
+                 PieceData};
+use priority_queue::PriorityQueue;
+use rand::random;
+use serde::de::{Deserialize, Deserializer};
+use serde::ser::{Serialize, SerializeSeq, Serializer};
+use std::cmp;
+use std::collections::hash_map::Entry;
+use std::collections::HashSet;
+use std::collections::{HashMap, VecDeque};
+use std::fs::{create_dir_all, remove_dir_all, File, OpenOptions};
 use std::io::Error as IOError;
 use std::io::ErrorKind;
-use std::fs::{create_dir_all, remove_dir_all, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use rand::random;
-use std::collections::hash_map::Entry;
-use std::cmp;
-use std::path::PathBuf;
-use priority_queue::PriorityQueue;
-use std::time::{Duration, Instant};
 use std::iter::FromIterator;
-use serde::ser::{Serialize, SerializeSeq, Serializer};
-use serde::de::{Deserialize, Deserializer};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 /* Need to:
 - Maintain file access to downloading/uploading data; 
@@ -28,6 +28,7 @@ so also need to abstract away file boundaries
 */
 
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
+/// TODO: Break this out into persistent/session components
 /// Represents a downloading torrent and assoicated file operations
 pub struct Torrent {
     metainfo: MetaInfo,
@@ -691,21 +692,21 @@ impl Torrent {
 }
 
 macro_rules! piece {
-    ($i : expr, $n : expr) => {
+    ($i:expr, $n:expr) => {
         Piece {
-            index : 0,
-            begin : $i,
-            length : $n,
+            index: 0,
+            begin: $i,
+            length: $n,
         }
     };
 }
 
 macro_rules! fpiece {
-    ($b : expr, $n : expr) => {
+    ($b:expr, $n:expr) => {
         FilePiece {
-            path : Default::default(),
-            begin : $b as i64,
-            length : $n as i64,
+            path: Default::default(),
+            begin: $b as i64,
+            length: $n as i64,
         }
     };
 }
@@ -733,8 +734,8 @@ fn make_pieces() -> Vec<Piece> {
 mod tests {
 
     use bittorrent::torrent::*;
-    use bittorrent::{Piece, metainfo::BTFile};
     use bittorrent::utils::gen_random_bytes;
+    use bittorrent::{metainfo::BTFile, Piece};
     use std::path::PathBuf;
 
     fn _test_pause(torrent: &mut Torrent, begin: Status) {

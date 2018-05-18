@@ -4,6 +4,7 @@ use bittorrent::bittorrent::Hash;
 
 use std::collections::HashMap;
 
+#[derive(PartialEq, Debug, Clone)]
 pub enum ClientError {
     NotFound,
     Disconnect,
@@ -26,10 +27,16 @@ impl TorrentState {
         }
     }
 
-    /*
-    fn mock() -> TorrentState, BidirectionalChannel<InfoMsg, ClientMsg> {
-
-    }*/
+    /// Used to mock updates in tests
+    fn mock() -> (TorrentState, BidirectionalChannel<InfoMsg, ClientMsg>) {
+        let (private, public) = BidirectionalChannel::create();
+        let obj = TorrentState {
+            manager: Manager::new(),
+            channel: private,
+            infos: HashMap::new(),
+        };
+        return (obj, public);
+    }
 
     pub fn torrent(&mut self, info_hash: String) -> Result<&Info, ClientError> {
         self.update_state()?;
@@ -68,13 +75,31 @@ impl TorrentState {
 #[cfg(test)]
 mod tests {
 
-    use webserver::torrent_state::*;
+    use torrent_state::*;
+
+    use bittorrent::bittorrent::manager::{BidirectionalChannel, ClientMsg, InfoMsg};
+    use bittorrent::bittorrent::manager::{Info, Manager, Status};
+
+    fn gen_info() -> Info {
+        Info {
+            info_hash: Hash::random(),
+            name: "Example".to_string(),
+            status: Status::Running,
+            progress: 0.1f32,
+            up: 100,
+            down: 50,
+            npeers: 5,
+        }
+    }
 
     #[test]
     fn test_torrent_state() {
+        let (state, chan) = TorrentState::mock();
         // Initial message
+        let torrents: Vec<Info> = (0..10).map(|_| gen_info()).collect();
+        chan.send(InfoMsg::All(torrents.clone()));
+        assert_eq!(state.torrents().unwrap(), torrents);
         // One is deleted
-
     }
 
 }

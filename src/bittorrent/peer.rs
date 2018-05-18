@@ -1,11 +1,9 @@
-use byteorder::BigEndian;
-use byteorder::ByteOrder;
 use bit_vec::BitVec;
 use bittorrent::{Hash, ParseError, Piece, PieceData};
+use byteorder::BigEndian;
+use byteorder::ByteOrder;
 use std::error::Error;
 use std::mem::transmute;
-use rand::Rng;
-use rand;
 use std::str::from_utf8;
 
 #[derive(Debug, Clone)]
@@ -343,12 +341,7 @@ impl Peer {
     }
 
     pub fn gen_peer_id() -> Hash {
-        let mut id: Hash = Hash([0; 20]);
-        let mut rng = rand::thread_rng();
-        for x in id.0.iter_mut() {
-            *x = rng.gen();
-        }
-        return id;
+        Hash::random()
     }
 
     /// Static method: received before the peer is created
@@ -403,8 +396,8 @@ impl Peer {
 #[cfg(test)]
 mod tests {
 
-    use bittorrent::peer::*;
     use bit_vec::BitVec;
+    use bittorrent::peer::*;
     use bittorrent::{ParseError, Piece, PieceData};
     use std::mem::transmute;
 
