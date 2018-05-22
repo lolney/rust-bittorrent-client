@@ -1,20 +1,10 @@
 use bit_vec::BitVec;
-use bittorrent::{manager::Status, metainfo::BTFile, metainfo::MetaInfo, torrent::Torrent, Hash,
-                 ParseError, Piece, PieceData};
+use bittorrent::{manager::Status, torrent::Torrent, Hash, ParseError, Piece, PieceData};
 use priority_queue::PriorityQueue;
-use rand::random;
-use serde::de::{Deserialize, Deserializer};
-use serde::ser::{Serialize, SerializeSeq, Serializer};
-use std::cmp;
-use std::collections::hash_map::Entry;
 use std::collections::HashSet;
-use std::collections::{HashMap, VecDeque};
-use std::fs::{create_dir_all, remove_dir_all, File, OpenOptions};
+use std::collections::VecDeque;
 use std::io::Error as IOError;
-use std::io::ErrorKind;
-use std::io::{Read, Seek, SeekFrom, Write};
 use std::iter::FromIterator;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 #[derive(PartialEq, Debug, Clone)]

@@ -1,21 +1,15 @@
 use bit_vec::BitVec;
-use bittorrent::{manager::Status, metainfo::BTFile, metainfo::MetaInfo, Hash, ParseError, Piece,
-                 PieceData};
-use priority_queue::PriorityQueue;
-use rand::random;
+use bittorrent::{metainfo::BTFile, metainfo::MetaInfo, Hash, ParseError, Piece, PieceData};
 use serde::de::{Deserialize, Deserializer};
-use serde::ser::{Serialize, SerializeSeq, Serializer};
+use serde::ser::Serializer;
 use std::cmp;
 use std::collections::hash_map::Entry;
-use std::collections::HashSet;
-use std::collections::{HashMap, VecDeque};
-use std::fs::{create_dir_all, remove_dir_all, File, OpenOptions};
+use std::collections::HashMap;
+use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::Error as IOError;
 use std::io::ErrorKind;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::iter::FromIterator;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 /// Represents persistent elements of a torrent and associated filesystem operations

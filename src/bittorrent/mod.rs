@@ -28,7 +28,8 @@ pub enum ParseError {
     Uri(String, UriError),
 }
 
-#[derive(Hash, Eq, PartialEq, Clone, Debug, Default, Copy, Serialize, Deserialize)]
+#[derive(Hash, Ord, PartialOrd, Eq, PartialEq, Clone, Debug, Default, Copy, Serialize,
+         Deserialize)]
 pub struct Hash(pub [u8; 20]);
 
 impl From<[u8; 20]> for Hash {

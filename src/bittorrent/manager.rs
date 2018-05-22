@@ -5,6 +5,7 @@ use bittorrent::{peer::Action, peer::Peer, peer::PeerInfo, torrent,
                  torrent_runtime::TorrentRuntime, tracker::Tracker, Hash, ParseError, Piece};
 use log::error;
 use priority_queue::PriorityQueue;
+use std::cmp::Ord;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::error::Error;
@@ -142,6 +143,20 @@ pub struct Info {
     pub down: usize,
     pub npeers: usize,
 }
+
+impl Ord for Info {
+    fn cmp(&self, other: &Info) -> Ordering {
+        self.info_hash.cmp(&other.info_hash)
+    }
+}
+
+impl PartialOrd for Info {
+    fn partial_cmp(&self, other: &Info) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Eq for Info {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InfoMsg {
@@ -393,7 +408,8 @@ impl Manager {
         }
     }
 
-    /// Add a new torrent from file `metainfo_path`, downloading to `download_path`
+    /// Add a new torrent from file `metainfo_path`, downloading to `download_path`.
+    /// Note: will not be reflected in the Controller until it's scheduled to check for new NewPeerMsgs
     pub fn add_torrent(
         &mut self,
         metainfo_path: &str,
