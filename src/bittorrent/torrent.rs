@@ -17,19 +17,8 @@ use std::iter::FromIterator;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/* Need to:
-- Maintain file access to downloading/uploading data; 
-  should probably cache in memory
-- Keep track of partial download of pieces
-- Maintain our bitfield
-
-Pieces are treated as part of a single file,
-so also need to abstract away file boundaries
-*/
-
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
-/// TODO: Break this out into persistent/session components
-/// Represents a downloading torrent and assoicated file operations
+/// Represents persistent elements of a torrent and associated filesystem operations
 pub struct Torrent {
     metainfo: MetaInfo,
     #[serde(deserialize_with = "deserialize_from_bytes")]
@@ -37,20 +26,6 @@ pub struct Torrent {
     bitfield: BitVec, // pieces we've downloaded
     map: HashMap<u32, Vec<DLMarker>>, // Piece indices -> indices indicated downloaded parts
     files: Vec<BTFile>,               // contains path (possibly renamed from metainfo) info
-    status: Status,
-
-    // Runtime info:
-    #[serde(skip)]
-    piece_queue: PieceQueue, // index -> rarity
-
-    #[serde(skip)]
-    outstanding_requests: VecDeque<Request>, // Requests that have been made, but not fullfilled
-
-    #[serde(skip)]
-    dl_rate: Rate,
-
-    #[serde(skip)]
-    ul_rate: Rate,
 }
 
 fn serialize_to_bytes<S>(bv: &BitVec, s: S) -> Result<S::Ok, S::Error>
@@ -75,12 +50,6 @@ struct FilePiece {
     length: i64,
 }
 
-#[derive(PartialEq, Debug, Clone)]
-struct Request {
-    piece: Piece,
-    time: Instant,
-}
-
 #[derive(PartialEq, Debug, Clone, Deserialize, Serialize)]
 enum DLMarker {
     Begin(u32),
@@ -96,170 +65,37 @@ impl DLMarker {
     }
 }
 
-/// Two-tiered priority queue
-/// 0-priority pieces are kept in `zeros`; they have effectively -inf priority,
-/// since there are no peers that have them
-/// Pieces move between zeros and queue as necessary
-#[derive(PartialEq, Debug, Clone)]
-struct PieceQueue {
-    zeros: HashSet<usize>,
-    queue: PriorityQueue<usize, isize>,
-}
-
-const MIN_PRIORITY: isize = -(::MAX_PEERS as isize) - 1; // never a valid value
-impl PieceQueue {
-    pub fn new(npieces: usize) -> PieceQueue {
-        PieceQueue {
-            zeros: HashSet::from_iter(0..npieces),
-            queue: PriorityQueue::from_iter((0..npieces).map(|i| (i, MIN_PRIORITY))),
-        }
-    }
-
-    pub fn peek(&self) -> Option<(usize, isize)> {
-        if let Some((i, v)) = self.queue.peek() {
-            Some((*i, *v))
-        } else {
-            None
-        }
-    }
-
-    pub fn pop(&mut self) -> Option<(usize, isize)> {
-        if let Some((i, priority)) = self.peek() {
-            if priority != MIN_PRIORITY {
-                self.queue.pop()
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
-    fn get_priority(&self, index: &usize) -> Option<isize> {
-        if let Some(v) = self.queue.get_priority(index) {
-            Some(*v)
-        } else {
-            None
-        }
-    }
-
-    pub fn change_priority_by<F>(&mut self, index: &usize, f: F) -> Option<isize>
-    where
-        F: Fn(isize) -> isize,
-    {
-        if let Some(_) = self.zeros.get(index) {
-            let new_priority = f(0);
-            if new_priority > 0 {
-                panic!("Priority can't be above 0");
-            } else if new_priority < 0 {
-                self.zeros.remove(index);
-                self.queue.change_priority(index, new_priority);
-            }
-            Some(new_priority)
-        } else if let Some(priority) = self.get_priority(index) {
-            let new_priority = f(priority);
-            if new_priority == 0 {
-                self.zeros.insert(*index);
-                self.queue.change_priority(index, MIN_PRIORITY);
-            } else {
-                self.queue.change_priority(index, new_priority);
-            }
-            Some(new_priority)
-        } else {
-            None
-        }
-    }
-}
-
-impl Default for PieceQueue {
-    fn default() -> Self {
-        PieceQueue {
-            zeros: Default::default(),
-            queue: Default::default(),
-        }
-    }
-}
-
-#[derive(PartialEq, Debug, Clone)]
-struct Rate {
-    total: usize,
-    buffer: VecDeque<(Instant, usize)>,
-}
-
-impl Rate {
-    pub fn new() -> Rate {
-        Rate::default()
-    }
-
-    fn prune(&mut self) {
-        while !self.buffer.is_empty() && self.buffer[0].0.elapsed() > Duration::from_secs(5) {
-            let (_, old) = self.buffer.pop_front().unwrap();
-            self.total -= old;
-        }
-    }
-
-    pub fn rate(&mut self) -> usize {
-        self.prune();
-        self.total
-    }
-
-    pub fn update(&mut self, n: usize) {
-        self.prune();
-        self.buffer.push_back((Instant::now(), n));
-        self.total += n;
-    }
-}
-
-impl Default for Rate {
-    fn default() -> Self {
-        Rate {
-            total: 0,
-            buffer: VecDeque::new(),
-        }
-    }
-}
-
 impl Torrent {
-    fn _new(infofile: &str, download_dir: &str) -> Result<Torrent, ParseError> {
+    pub fn new(
+        infofile: &str,
+        download_dir: &str,
+        downloaded: bool,
+    ) -> Result<Torrent, ParseError> {
         match MetaInfo::read(infofile) {
             Ok(metainfo) => {
                 let files = metainfo.info().file_info.as_BTFiles(download_dir);
-                Ok(Torrent {
+                let npieces = metainfo.npieces();
+                let mut torrent = Torrent {
+                    bitfield: BitVec::from_elem(npieces as usize, downloaded),
                     metainfo: metainfo,
-                    bitfield: Default::default(),
                     map: Default::default(),
                     files: files,
-                    piece_queue: Default::default(),
-                    outstanding_requests: Default::default(),
-                    dl_rate: Rate::new(),
-                    ul_rate: Rate::new(),
-                    status: Status::Running,
-                })
+                };
+                // Verify already downloaded files
+                if downloaded {
+                    if let Err(e) = torrent.verify_files() {
+                        Err(ParseError::from_parse("Failed to create torrent", e))
+                    } else {
+                        Ok(torrent)
+                    }
+                } else {
+                    Ok(torrent)
+                }
             }
             Err(e) => Err(ParseError::from_parse_string(
                 String::from("Error adding torrent"),
                 e,
             )),
-        }
-    }
-
-    pub fn new(infofile: &str, download_dir: &str) -> Result<Torrent, ParseError> {
-        let mut torrent = Torrent::_new(infofile, download_dir)?;
-        let npieces = torrent.metainfo.npieces();
-        torrent.bitfield = BitVec::from_elem(npieces as usize, false);
-        torrent.piece_queue = PieceQueue::new(npieces as usize);
-        return Ok(torrent);
-    }
-
-    pub fn from_downloaded(infofile: &str, download_dir: &str) -> Result<Torrent, ParseError> {
-        let mut torrent = Torrent::_new(infofile, download_dir)?;
-        let npieces = torrent.metainfo.npieces();
-        torrent.bitfield = BitVec::from_elem(npieces as usize, true);
-        torrent.status = Status::Complete;
-        if let Err(e) = torrent.verify_files() {
-            Err(ParseError::from_parse("Failed to create torrent", e))
-        } else {
-            Ok(torrent)
         }
     }
 
@@ -275,37 +111,12 @@ impl Torrent {
                     self.piece_length() as u32
                 },
             };
-            let piece_data = self.read_block_set_upload(&piece, false)?;
+            let piece_data = self.read_block(&piece)?;
             if !self.metainfo.valid_piece(&piece_data) {
                 return Err(parse_error!("Piece in supplied file is invalid"));
             }
         }
         return Ok(());
-    }
-
-    /// `pause`: true to pause, or false to unpause
-    /// Returns true if status is changed; else false
-    pub fn pause(&mut self, pause: bool) -> bool {
-        if pause {
-            if self.status != Status::Paused {
-                self.status = Status::Paused;
-                true
-            } else {
-                false
-            }
-        } else {
-            if self.status == Status::Paused {
-                if self.remaining() == 0 {
-                    self.status = Status::Complete;
-                    true
-                } else {
-                    self.status = Status::Running;
-                    true
-                }
-            } else {
-                false
-            }
-        }
     }
 
     pub fn trackers(&self) -> Vec<String> {
@@ -316,16 +127,8 @@ impl Torrent {
         self.metainfo.info().file_info.name()
     }
 
-    pub fn status(&self) -> Status {
-        self.status
-    }
-
     pub fn piece_length(&self) -> i64 {
         self.metainfo.info().piece_length
-    }
-
-    pub fn nrequests(&self) -> usize {
-        self.outstanding_requests.len()
     }
 
     pub fn bitfield(&self) -> &BitVec {
@@ -347,84 +150,21 @@ impl Torrent {
         size - dl
     }
 
-    pub fn set_complete(&mut self) -> Result<(), String> {
-        if self.remaining() == 0 {
-            if self.status == Status::Running {
-                self.status = Status::Complete;
-                Ok(())
-            } else {
-                Err(format!(
-                    "Tried to set torrent as complete, but its status is {:?}",
-                    self.status
-                ))
-            }
-        } else {
-            Err("Tried to set torrent as complete, but it's not complete".to_string())
-        }
-    }
-
     /// Returns the total size in bytes of the torrent
     pub fn size(&self) -> usize {
         self.metainfo.total_size()
-    }
-
-    pub fn download_rate(&mut self) -> usize {
-        self.dl_rate.rate()
-    }
-
-    pub fn upload_rate(&mut self) -> usize {
-        self.ul_rate.rate()
-    }
-
-    fn remove_request(&mut self, piece_data: &PieceData) {
-        self.outstanding_requests
-            .retain(|req| req.piece != piece_data.piece);
-    }
-
-    fn default_piece(&self, index: usize) -> Piece {
-        if index == self.npieces() - 1 {
-            Piece::new(index as u32, 0, self.metainfo.last_piece_length() as u32)
-        } else {
-            Piece::new(index as u32, 0, self.piece_length() as u32)
-        }
     }
 
     pub fn npieces(&self) -> usize {
         self.bitfield.len()
     }
 
-    /// select the next piece to be requested
-    pub fn select_piece(&mut self) -> Option<Piece> {
-        let timeout = Duration::from_secs(::READ_TIMEOUT);
-        let front = self.outstanding_requests.pop_front();
-        // Try to take an expired outstanding request first
-        if front.is_some() {
-            let front = front.unwrap();
-            if front.time.elapsed() >= timeout {
-                return Some(front.piece);
-            } else {
-                self.outstanding_requests.push_front(front)
-            }
+    pub fn default_piece(&self, index: usize) -> Piece {
+        if index == self.npieces() - 1 {
+            Piece::new(index as u32, 0, self.metainfo.last_piece_length() as u32)
+        } else {
+            Piece::new(index as u32, 0, self.piece_length() as u32)
         }
-        // Take from the piece queue otherwise
-        match self.piece_queue.pop() {
-            Some((index, _)) => {
-                let piece = self.default_piece(index);
-                self.outstanding_requests.push_back(Request {
-                    piece: piece.clone(),
-                    time: Instant::now(),
-                });
-                Some(piece)
-            }
-            None => None,
-        }
-    }
-
-    /// `d_npeers`: change in number of peers holding that piece
-    /// An increase in peers decreases the priority
-    pub fn update_priority(&mut self, piece_index: usize, d_npeers: isize) {
-        self.piece_queue
-            .change_priority_by(&piece_index, |n| n - d_npeers);
     }
 
     /// For each of the files specified in the torrent file, create it and parent directories
@@ -440,9 +180,7 @@ impl Torrent {
 
     /// Write block after verifying that hash is correct
     pub fn write_block(&mut self, piece: &PieceData) -> Result<(), IOError> {
-        self.remove_request(piece);
         if self.metainfo.valid_piece(piece) {
-            self.dl_rate.update(piece.piece.length as usize);
             self.write_block_raw(piece)
         } else {
             Err(IOError::new(
@@ -475,20 +213,9 @@ impl Torrent {
 
     /// Read block after verifying that we have it
     pub fn read_block(&mut self, piece: &Piece) -> Result<PieceData, IOError> {
-        self.read_block_set_upload(piece, true)
-    }
-
-    pub fn read_block_set_upload(
-        &mut self,
-        piece: &Piece,
-        is_upload: bool,
-    ) -> Result<PieceData, IOError> {
         match self.bitfield.get(piece.index as usize) {
             Some(have) => {
                 if have || self.have_block(piece) {
-                    if is_upload {
-                        self.ul_rate.update(piece.length as usize);
-                    }
                     self.read_block_raw(piece)
                 } else {
                     Err(IOError::new(
@@ -738,76 +465,19 @@ mod tests {
     use bittorrent::{metainfo::BTFile, Piece};
     use std::path::PathBuf;
 
-    fn _test_pause(torrent: &mut Torrent, begin: Status) {
-        assert_eq!(torrent.status, begin);
-        assert_eq!(torrent.pause(true), true);
-        assert_eq!(torrent.status, Status::Paused);
-        assert_eq!(torrent.pause(true), false);
-        assert_eq!(torrent.status, Status::Paused);
-        assert_eq!(torrent.pause(false), true);
-        assert_eq!(torrent.status, begin);
-        assert_eq!(torrent.pause(false), false);
-        assert_eq!(torrent.status, begin);
-    }
-
-    #[test]
-    fn test_pause() {
-        // Initialize, pause, then unpause
-        _test_pause(&mut Torrent::new(::TEST_FILE, "").unwrap(), Status::Running);
-        _test_pause(
-            &mut Torrent::from_downloaded(
-                ::TEST_FILE,
-                &format!("{}/{}", ::READ_DIR, "valid_torrent"),
-            ).unwrap(),
-            Status::Complete,
-        );
-    }
-
-    #[test]
-    fn test_piece_queue() {
-        let mut piece_queue = PieceQueue::new(3);
-        // Initially nothing in queue
-        assert_eq!(piece_queue.pop(), None);
-        // Change priority
-        piece_queue.change_priority_by(&0, |p| p - 1).unwrap();
-        assert_eq!(piece_queue.queue.len(), 3);
-        assert_eq!(piece_queue.zeros.len(), 2);
-        assert_eq!(piece_queue.peek().unwrap(), (0, -1));
-        // Change it back
-        piece_queue.change_priority_by(&0, |p| p + 1).unwrap();
-        assert_eq!(piece_queue.pop(), None);
-        // Change again
-        piece_queue.change_priority_by(&0, |p| p - ::MAX_PEERS as isize);
-        assert_eq!(piece_queue.pop().unwrap(), (0, -(::MAX_PEERS as isize)));
-        assert_eq!(piece_queue.change_priority_by(&0, |p| p + 1), None);
-        // Change the other two
-        piece_queue.change_priority_by(&1, |p| p - 1).unwrap();
-        piece_queue.change_priority_by(&2, |p| p - 2).unwrap();
-        assert_eq!(piece_queue.peek().unwrap(), (1, -1));
-    }
-
-    #[test]
-    fn test_priority() {
-        let mut torrent = Torrent::new(::TEST_FILE, "").unwrap();
-
-        // update priority for piece
-        for i in 0..torrent.npieces() {
-            torrent.update_priority(i, 1);
-            assert_eq!(torrent.select_piece().unwrap().index as usize, i);
-        }
-        assert_eq!(torrent.select_piece(), None);
-        assert_eq!(torrent.outstanding_requests.len(), torrent.npieces());
-    }
-
     #[test]
     fn test_from_downloaded() {
-        let res =
-            Torrent::from_downloaded(::TEST_FILE, &format!("{}/{}", ::READ_DIR, "valid_torrent"));
+        let res = Torrent::new(
+            ::TEST_FILE,
+            &format!("{}/{}", ::READ_DIR, "valid_torrent"),
+            true,
+        );
         assert!(res.is_ok());
 
-        let res = Torrent::from_downloaded(
+        let res = Torrent::new(
             ::TEST_FILE,
             &format!("{}/{}", ::READ_DIR, "invalid_torrent"),
+            true,
         );
         assert!(res.is_err());
     }
@@ -816,7 +486,7 @@ mod tests {
     fn test_in_range() {
         let p = make_pieces();
 
-        let mut torrent = Torrent::new(::TEST_FILE, "").unwrap();
+        let mut torrent = Torrent::new(::TEST_FILE, "", false).unwrap();
 
         for b in p.iter() {
             assert!(!torrent.have_block(&b));
@@ -856,7 +526,7 @@ mod tests {
 
         let p = make_pieces();
 
-        let mut torrent = Torrent::new(::TEST_FILE, "").unwrap();
+        let mut torrent = Torrent::new(::TEST_FILE, "", false).unwrap();
 
         torrent.insert_piece(&p[1]);
         torrent.insert_piece(&p[7]);
@@ -895,7 +565,7 @@ mod tests {
 
     #[test]
     fn test_map_files() {
-        let mut torrent = Torrent::new(::TEST_FILE, "").unwrap();
+        let mut torrent = Torrent::new(::TEST_FILE, "", false).unwrap();
         let piece_length: u32 = torrent.metainfo.info().piece_length as u32;
         let piece0 = Piece {
             index: 0,
@@ -955,7 +625,7 @@ mod tests {
         let mut fnames = vec!["test/torrent.torrent", ::TEST_FILE];
         let test_files = fnames
             .iter_mut()
-            .map(|x| Torrent::new(x, &download_dir).unwrap());
+            .map(|x| Torrent::new(x, &download_dir, false).unwrap());
         for mut torrent in test_files {
             torrent.create_files().unwrap();
             test_read_write_torrent(&mut torrent);

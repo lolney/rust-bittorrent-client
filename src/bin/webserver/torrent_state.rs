@@ -94,11 +94,13 @@ mod tests {
 
     #[test]
     fn test_torrent_state() {
-        let (state, chan) = TorrentState::mock();
+        let (mut state, chan) = TorrentState::mock();
         // Initial message
         let torrents: Vec<Info> = (0..10).map(|_| gen_info()).collect();
         chan.send(InfoMsg::All(torrents.clone()));
-        assert_eq!(state.torrents().unwrap(), torrents);
+        for i in (0..10) {
+            assert_eq!(*state.torrents().unwrap()[i], torrents[i]);
+        }
         // One is deleted
     }
 

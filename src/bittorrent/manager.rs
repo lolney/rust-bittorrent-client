@@ -1,8 +1,8 @@
 extern crate core;
 
 use bit_vec::BitVec;
-use bittorrent::{peer::Action, peer::Peer, peer::PeerInfo, torrent, torrent::Torrent,
-                 tracker::Tracker, Hash, ParseError, Piece};
+use bittorrent::{peer::Action, peer::Peer, peer::PeerInfo, torrent,
+                 torrent_runtime::TorrentRuntime, tracker::Tracker, Hash, ParseError, Piece};
 use log::error;
 use priority_queue::PriorityQueue;
 use std::cmp::Ordering;
@@ -33,11 +33,11 @@ use futures::prelude::Stream;
 /// reads and writes to disk, and sends relevant updates to the Controller.
 
 pub struct Manager {
-    torrents: Arc<Mutex<HashMap<Hash, Torrent>>>, // u8 is the Info_hash
-    peer_id: Hash,                                // our peer id
-    npeers: Arc<AtomicUsize>,                     // TODO: can this just be in the controller?
-    manager_send: Option<Sender<NewPeerMsg>>,     // Must be initialized when Controller is created
-    port: u16,                                    // Port we're listening on
+    torrents: Arc<Mutex<HashMap<Hash, TorrentRuntime>>>, // u8 is the Info_hash
+    peer_id: Hash,                                       // our peer id
+    npeers: Arc<AtomicUsize>, // TODO: can this just be in the controller?
+    manager_send: Option<Sender<NewPeerMsg>>, // Must be initialized when Controller is created
+    port: u16,                // Port we're listening on
 }
 
 #[derive(Debug)]
@@ -177,6 +177,7 @@ impl PartialOrd for Status {
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum ClientMsg {
     Pause(Hash),
     Resume(Hash),
@@ -206,6 +207,7 @@ pub trait Message {
     fn get_empty() -> Self;
 }
 
+#[derive(Debug)]
 pub struct BidirectionalChannel<S, R>
 where
     S: Message,
@@ -385,7 +387,7 @@ impl Manager {
         metainfo_path: &str,
         download_path: &str,
     ) -> Result<(), ParseError> {
-        match Torrent::from_downloaded(metainfo_path, download_path) {
+        match TorrentRuntime::new(metainfo_path, download_path, true) {
             Ok(torrent) => self._add_torrent(torrent),
             Err(err) => Err(err),
         }
@@ -397,7 +399,7 @@ impl Manager {
         metainfo_path: &str,
         download_path: &str,
     ) -> Result<(), ParseError> {
-        match Torrent::new(metainfo_path, download_path) {
+        match TorrentRuntime::new(metainfo_path, download_path, false) {
             Ok(torrent) => {
                 torrent.create_files()?;
                 self._add_torrent(torrent)
@@ -406,7 +408,7 @@ impl Manager {
         }
     }
 
-    fn _add_torrent(&mut self, torrent: Torrent) -> Result<(), ParseError> {
+    fn _add_torrent(&mut self, torrent: TorrentRuntime) -> Result<(), ParseError> {
         let mut core = Core::new()?;
         let info_hash = torrent.info_hash();
         let stream = Tracker::get_peers(
@@ -464,7 +466,7 @@ impl Manager {
     /// Handle incoming clients
     fn handle_client(
         stream: &mut TcpStream,
-        torrents: &Arc<Mutex<HashMap<Hash, Torrent>>>,
+        torrents: &Arc<Mutex<HashMap<Hash, TorrentRuntime>>>,
         handshake: Handshake,
     ) -> Result<Peer, ParseError> {
         if let Handshake::Initiator { peer_id, info_hash } = handshake {
@@ -517,7 +519,7 @@ impl Manager {
 
     fn match_torrent(
         info_hash: &Hash,
-        torrents: &Arc<Mutex<HashMap<Hash, Torrent>>>,
+        torrents: &Arc<Mutex<HashMap<Hash, TorrentRuntime>>>,
     ) -> Result<bool, ParseError> {
         // Find the matching torrent
         let torrents = torrents.lock().expect("Torrents mutex poisoned");
@@ -530,7 +532,7 @@ impl Manager {
         ))
     }
 
-    fn update_priority_all(peer: &Peer, torrent: &mut Torrent, by: isize) {
+    fn update_priority_all(peer: &Peer, torrent: &mut TorrentRuntime, by: isize) {
         for (i, has) in peer.bitfield.iter().enumerate() {
             if has {
                 torrent.update_priority(i, by);
@@ -543,7 +545,7 @@ impl Manager {
     fn receive(
         mut peer: Peer,
         mut stream: TcpStream,
-        torrents: Arc<Mutex<HashMap<Hash, Torrent>>>,
+        torrents: Arc<Mutex<HashMap<Hash, TorrentRuntime>>>,
         comm: BidirectionalChannel<PeerUpdate, ManagerUpdate>,
     ) -> Result<(), ParseError> {
         let mut buf = [0; ::MSG_SIZE];
@@ -724,7 +726,7 @@ impl Manager {
 
     fn connect(
         stream: Result<TcpStream, IOError>,
-        torrents: Arc<Mutex<HashMap<Hash, Torrent>>>,
+        torrents: Arc<Mutex<HashMap<Hash, TorrentRuntime>>>,
         npeers: Arc<AtomicUsize>,
         manager_send: Sender<NewPeerMsg>,
         handshake: Handshake,
@@ -825,7 +827,7 @@ macro_rules! remove_peer {
 
 struct Controller {
     recv: mpsc::Receiver<NewPeerMsg>,
-    torrents: Arc<Mutex<HashMap<Hash, Torrent>>>,
+    torrents: Arc<Mutex<HashMap<Hash, TorrentRuntime>>>,
     npeers: Arc<AtomicUsize>,
     client_comm: BidirectionalChannel<InfoMsg, ClientMsg>,
     peer_priority: PriorityQueue<Hash, PeerPriority>,
@@ -841,6 +843,14 @@ where
     base: Duration,
 }
 
+// TODO: macro
+// Input: (function and frequency) pairs
+// Generate code
+/*
+{
+
+}
+*/
 impl<F> Timers<F>
 where
     F: Fn() -> bool,
@@ -916,7 +926,7 @@ where
 impl Controller {
     pub fn new(
         recv: mpsc::Receiver<NewPeerMsg>,
-        torrents: Arc<Mutex<HashMap<Hash, Torrent>>>,
+        torrents: Arc<Mutex<HashMap<Hash, TorrentRuntime>>>,
         npeers: Arc<AtomicUsize>,
         client_comm: BidirectionalChannel<InfoMsg, ClientMsg>,
     ) -> Controller {
@@ -1217,7 +1227,7 @@ impl Controller {
         }
     }
 
-    fn create_info(&self, info_hash: &Hash, torrent: &mut Torrent) -> Info {
+    fn create_info(&self, info_hash: &Hash, torrent: &mut TorrentRuntime) -> Info {
         Info {
             info_hash: info_hash.clone(),
             name: torrent.name().to_string(),
@@ -1270,7 +1280,7 @@ mod tests {
                 Controller::new(manager_recv, $torrents.clone(), $npeers.clone(), info_send);
 
             // Add torrent
-            let torrent = Torrent::new(::TEST_FILE, ::DL_DIR).unwrap();
+            let torrent = TorrentRuntime::new(::TEST_FILE, ::DL_DIR, false).unwrap();
             let $npieces = torrent.npieces();
 
             let $info_hash = torrent.info_hash().clone();
@@ -1370,6 +1380,12 @@ mod tests {
             }
         }
     }
+
+    // Create n seeding clients
+    // Create n leeching clients
+
+    // Create seeder
+    // Create leecher. Suspend leecher, then reload
 
     fn gen_peer(port: i64, info_hash: Hash) -> Peer {
         Peer::new(
