@@ -2,14 +2,12 @@ use hyper::error::Error as HyperError;
 use hyper::error::UriError;
 use rand;
 use rand::Rng;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::default::Default;
 use std::error::Error;
 use std::fmt;
 use std::fmt::Display;
 use std::io::Error as IOError;
-use std::path::Path;
 
 /// Describes a decoded benencodable object
 #[derive(PartialEq, Debug, Clone)]
@@ -18,6 +16,7 @@ pub enum BencodeT {
     Integer(i64),
     Dictionary(HashMap<String, BencodeT>),
     List(Vec<BencodeT>),
+    ByteString(Vec<u8>),
 }
 
 #[derive(Debug)]
@@ -317,7 +316,7 @@ impl Bencodable for String {
 
 impl Bencodable for Hash {
     fn to_BencodeT(self) -> BencodeT {
-        return unsafe { BencodeT::String(String::from_utf8_unchecked(self.0.to_vec())) };
+        return BencodeT::ByteString(self.0.to_vec());
     }
     fn from_BencodeT(bencode_t: &BencodeT) -> Result<Hash, ParseError> {
         match bencode_t {
@@ -343,6 +342,20 @@ impl Bencodable for HashMap<String, BencodeT> {
             &BencodeT::Dictionary(ref hm) => Ok(hm.clone()),
             _ => Err(ParseError::new_str(
                 "Attempted to convert non-dictionary BencodeT to hashmap",
+            )),
+        }
+    }
+}
+
+impl Bencodable for Vec<u8> {
+    fn to_BencodeT(self) -> BencodeT {
+        BencodeT::ByteString(self)
+    }
+    fn from_BencodeT(bencode_t: &BencodeT) -> Result<Vec<u8>, ParseError> {
+        match bencode_t {
+            &BencodeT::ByteString(ref list) => Ok(list.clone()),
+            _ => Err(ParseError::new_str(
+                "Attempted to convert non-list BencodeT to vector",
             )),
         }
     }
@@ -435,32 +448,6 @@ impl Bencodable for u32 {
                     ))
                 } else {
                     Ok(i.clone() as u32)
-                }
-            }
-            _ => Err(ParseError::new_str(
-                "Attempted to convert non-integer BencodeT to integer",
-            )),
-        }
-    }
-}
-
-impl Bencodable for u8 {
-    fn to_BencodeT(self) -> BencodeT {
-        BencodeT::Integer(self as i64)
-    }
-    fn from_BencodeT(bencode_t: &BencodeT) -> Result<u8, ParseError> {
-        match bencode_t {
-            &BencodeT::Integer(ref i) => {
-                if *i < 0 {
-                    Err(ParseError::new_str(
-                        "Attempted to convert negative BencodeT::Integer to u8",
-                    ))
-                } else if *i > 2 ^ 8 - 1 {
-                    Err(ParseError::new_str(
-                        "BencodeT::Integer is too large to convert to u8",
-                    ))
-                } else {
-                    Ok(i.clone() as u8)
                 }
             }
             _ => Err(ParseError::new_str(

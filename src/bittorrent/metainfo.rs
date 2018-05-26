@@ -1,17 +1,17 @@
-use std::collections::HashMap;
-use bittorrent::{Bencodable, BencodeT, Hash, ParseError};
-use bittorrent::bencoder::encode;
 use bittorrent::bedecoder::parse;
+use bittorrent::bencoder::encode;
 use bittorrent::PieceData;
-use std::fs::File;
-use std::path::PathBuf;
-use std::io::BufReader;
-use std::io::prelude::*;
-use sha1::Sha1;
-use std::str;
-use std::error::Error;
-use std::io::Error as IOError;
+use bittorrent::{Bencodable, BencodeT, Hash, ParseError};
 use serde::{Deserialize, Serialize};
+use sha1::Sha1;
+use std::collections::HashMap;
+use std::error::Error;
+use std::fs::File;
+use std::io::prelude::*;
+use std::io::BufReader;
+use std::io::Error as IOError;
+use std::path::PathBuf;
+use std::str;
 
 /*
 Ideally the methods in this file would use a macro that enumerated the fields
@@ -335,7 +335,7 @@ impl Bencodable for MIFile {
 impl MetaInfo {
     pub fn info_hash(&self) -> Hash {
         let bstring = encode(&self.info.to_BencodeT());
-        hash(bstring.as_bytes())
+        hash(&bstring)
     }
 
     pub fn info(&self) -> &Info {
@@ -392,7 +392,7 @@ impl MetaInfo {
 
         match parse(&contents) {
             Ok(bencodet) => MetaInfo::from_BencodeT(&bencodet),
-            Err(err) => Err(ParseError::new(err)),
+            Err(err) => Err(err),
         }
     }
 
@@ -400,7 +400,7 @@ impl MetaInfo {
         let bencodet = self.to_BencodeT();
         let bencoded = encode(&bencodet);
         let mut file = File::create(&outfile)?;
-        file.write_all(bencoded.as_bytes())
+        file.write_all(&bencoded)
     }
 
     pub fn from_BencodeT(bencodet: &BencodeT) -> Result<MetaInfo, ParseError> {
@@ -493,7 +493,7 @@ impl Info {
         for slice in hashes {
             vec.extend_from_slice(&slice.0);
         }
-        return unsafe { BencodeT::String(String::from_utf8_unchecked(vec)) };
+        return BencodeT::ByteString(vec);
     }
 
     pub fn to_BencodeT(&self) -> BencodeT {
@@ -533,7 +533,7 @@ mod tests {
             204, 177, 1, 160, 101, 203, 150, 69, 169, 79, 86, 153, 37, 219, 218, 106, 227, 35, 24,
             1,
         ];
-        let string = unsafe { str::from_utf8_unchecked(&bytes).to_string() };
+        let string = unsafe { str::from_utf8(&bytes).unwrap().to_string() };
         let vec = Info::split_hashes(string.clone()).unwrap();
         let bstring = Info::hashes_to_string(&vec);
 

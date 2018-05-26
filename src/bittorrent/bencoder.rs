@@ -1,57 +1,65 @@
-use std::collections::{BTreeMap, HashMap};
 use bittorrent::BencodeT;
+use std::collections::{BTreeMap, HashMap};
 
 /// Entry point for serializing (bencoding) BencodeT objects
-pub fn encode(bencobj: &BencodeT) -> String {
+pub fn encode(bencobj: &BencodeT) -> Vec<u8> {
     match bencobj {
         &BencodeT::String(ref string) => encode_string(string.as_str()),
         &BencodeT::Integer(int) => encode_int(int),
         &BencodeT::Dictionary(ref hm) => encode_dic(&hm),
         &BencodeT::List(ref vec) => encode_list(&vec),
+        &BencodeT::ByteString(ref vec) => encode_bstring(&vec),
     }
 }
 
-fn encode_string(instring: &str) -> String {
-    let mut outstring = String::from(instring.len().to_string());
-    outstring.push(':');
-    outstring.push_str(instring);
-    return outstring;
+fn encode_string(instring: &str) -> Vec<u8> {
+    encode_bstring(instring.as_bytes())
 }
 
-fn encode_int(int: i64) -> String {
-    let mut outstring = String::from("i");
-    outstring.push_str(int.to_string().as_str());
-    outstring.push('e');
-    return outstring;
+fn encode_int(int: i64) -> Vec<u8> {
+    let mut vec = Vec::new();
+    vec.push('i' as u8);
+    vec.extend_from_slice(int.to_string().as_bytes());
+    vec.push('e' as u8);
+    return vec;
 }
 
-fn encode_dic(hm: &HashMap<String, BencodeT>) -> String {
-    let mut outstring = String::from("d");
+fn encode_dic(hm: &HashMap<String, BencodeT>) -> Vec<u8> {
+    let mut vec = Vec::new();
+    vec.push('d' as u8);
     let ordered: BTreeMap<_, _> = hm.iter().collect();
     for (key, value) in ordered.iter() {
-        outstring.push_str(encode_string(key).as_str());
-        outstring.push_str(encode(value).as_str());
+        vec.extend_from_slice(&encode_string(key));
+        vec.extend_from_slice(&encode(value));
     }
-    outstring.push('e');
-    return outstring;
+    vec.push('e' as u8);
+    return vec;
 }
 
-fn encode_list(vec: &Vec<BencodeT>) -> String {
-    let mut outstring = String::from("l");
-    for elem in vec {
-        outstring.push_str(encode(elem).as_str());
+fn encode_list(list: &Vec<BencodeT>) -> Vec<u8> {
+    let mut vec = Vec::new();
+    vec.push('l' as u8);
+    for elem in list {
+        vec.extend_from_slice(&encode(elem));
     }
-    outstring.push('e');
-    return outstring;
+    vec.push('e' as u8);
+    return vec;
+}
+
+fn encode_bstring(slice: &[u8]) -> Vec<u8> {
+    let mut vec = Vec::from(slice.len().to_string().as_bytes());
+    vec.push(':' as u8);
+    vec.extend_from_slice(slice);
+    return vec;
 }
 
 #[cfg(test)]
 mod tests {
 
     use bittorrent::bencoder::*;
-    use std::collections::HashMap;
-    use bittorrent::BencodeT;
     use bittorrent::utils::{create_ints, create_strings};
+    use bittorrent::BencodeT;
+    use std::collections::HashMap;
 
     #[test]
     fn strings() {
