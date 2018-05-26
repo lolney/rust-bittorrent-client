@@ -320,13 +320,13 @@ impl Bencodable for Hash {
     }
     fn from_BencodeT(bencode_t: &BencodeT) -> Result<Hash, ParseError> {
         match bencode_t {
-            &BencodeT::String(ref string) => {
+            &BencodeT::ByteString(ref vec) => {
                 let mut a: Hash = Default::default();
-                a.0.copy_from_slice(string.as_bytes());
+                a.0.copy_from_slice(vec.as_slice());
                 Ok(a)
             }
             _ => Err(parse_error!(
-                "Attempted to convert non-string BencodeT to Hash: {:?}",
+                "Attempted to convert non-binary BencodeT to Hash: {:?}",
                 bencode_t
             )),
         }

@@ -65,7 +65,7 @@ mod tests {
     fn strings() {
         let (strings, bstrings) = create_strings();
         for (bstring, string) in bstrings.iter().zip(strings) {
-            assert_eq!(string, encode(bstring));
+            assert_eq!(string.as_bytes(), encode(bstring).as_slice());
         }
     }
 
@@ -73,7 +73,7 @@ mod tests {
     fn ints() {
         let (strings, ints) = create_ints();
         for (int, string) in ints.iter().zip(strings) {
-            assert_eq!(string, encode(int));
+            assert_eq!(string.as_bytes(), encode(int).as_slice());
         }
     }
 
@@ -82,7 +82,7 @@ mod tests {
         let (sstrings, sbencoded) = create_strings();
         let (istrings, ibencoded) = create_ints();
         let list = BencodeT::List(sbencoded.clone());
-        assert_eq!(encode_list(&sbencoded), encode(&list));
+        assert_eq!(encode_list(&sbencoded), encode(&list).as_slice());
 
         let string = "li1ei2ei3ee";
         let list = BencodeT::List(
@@ -91,7 +91,7 @@ mod tests {
                 .map(|i| BencodeT::Integer(i))
                 .collect(),
         );
-        assert_eq!(string, encode(&list));
+        assert_eq!(string.as_bytes(), encode(&list).as_slice());
     }
 
     #[test]
@@ -103,7 +103,7 @@ mod tests {
             hm.insert(i.to_string(), sb.clone());
         }
         let bhm = BencodeT::Dictionary(hm.clone());
-        assert_eq!(encode_dic(&hm), encode(&bhm));
+        assert_eq!(encode_dic(&hm), encode(&bhm).as_slice());
 
         let string = "d1:gd1:ei8e1:fi9eee";
         let mut dic1 = HashMap::new();
@@ -111,6 +111,9 @@ mod tests {
         dic1.insert(String::from("f"), BencodeT::Integer(9));
         let mut dic2 = HashMap::new();
         dic2.insert(String::from("g"), BencodeT::Dictionary(dic1));
-        assert_eq!(string, encode(&BencodeT::Dictionary(dic2)));
+        assert_eq!(
+            string.as_bytes(),
+            encode(&BencodeT::Dictionary(dic2)).as_slice()
+        );
     }
 }

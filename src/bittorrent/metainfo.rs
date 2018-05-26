@@ -458,8 +458,8 @@ impl Info {
             &BencodeT::Dictionary(ref hm) => Ok(Info {
                 piece_length: i64::from_BencodeT(hm.get("piece length").unwrap())?,
                 pieces: {
-                    let string = String::from_BencodeT(hm.get("pieces").unwrap())?;
-                    Info::split_hashes(string)?
+                    let vec = Vec::from_BencodeT(hm.get("pieces").unwrap())?;
+                    Info::split_hashes(vec)?
                 },
                 private: elem_from_entry(hm, "private"),
                 file_info: FileInfo::from_BencodeT(hm)?,
@@ -470,22 +470,22 @@ impl Info {
         }
     }
 
-    fn split_hashes(string: String) -> Result<Vec<Hash>, ParseError> {
-        if string.len() % 20 != 0 {
+    fn split_hashes(vec: Vec<u8>) -> Result<Vec<Hash>, ParseError> {
+        if vec.len() % 20 != 0 {
             return Err(ParseError::new_str("pieces string must be multiple of 20"));
         }
 
-        let mut vec = Vec::<Hash>::new();
+        let mut out = Vec::<Hash>::new();
 
-        for i in 0..string.len() / 20 {
+        for i in 0..vec.len() / 20 {
             let s = i * 20;
             let e = (i + 1) * 20;
             let mut a: Hash = Default::default();
-            a.0.copy_from_slice(&string.as_bytes()[s..e]);
-            vec.push(a);
+            a.0.copy_from_slice(&vec[s..e]);
+            out.push(a);
         }
 
-        Ok(vec)
+        Ok(out)
     }
 
     fn hashes_to_string(hashes: &Vec<Hash>) -> BencodeT {
@@ -533,17 +533,16 @@ mod tests {
             204, 177, 1, 160, 101, 203, 150, 69, 169, 79, 86, 153, 37, 219, 218, 106, 227, 35, 24,
             1,
         ];
-        let string = unsafe { str::from_utf8(&bytes).unwrap().to_string() };
-        let vec = Info::split_hashes(string.clone()).unwrap();
+        let vec = Info::split_hashes(bytes.to_vec()).unwrap();
         let bstring = Info::hashes_to_string(&vec);
 
         match &bstring {
-            &BencodeT::String(ref string2) => {
-                assert_eq!(string.as_bytes(), string2.as_bytes());
+            &BencodeT::ByteString(ref bytes2) => {
+                assert_eq!(bytes2, &bytes.to_vec());
             }
-            _ => {}
+            _ => assert!(false),
         }
-        assert_eq!(BencodeT::String(string), bstring);
+        assert_eq!(BencodeT::ByteString(bytes.to_vec()), bstring);
     }
 
     #[test]

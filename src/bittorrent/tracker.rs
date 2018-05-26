@@ -1,20 +1,20 @@
 /* Tracker communication handled here
 */
-use bittorrent::{Bencodable, BencodeT, Hash, Keys, ParseError};
-use std::net::SocketAddr;
-use bittorrent::peer::{Peer, PeerInfo};
 use bittorrent::bedecoder::parse;
+use bittorrent::peer::{Peer, PeerInfo};
+use bittorrent::{Bencodable, BencodeT, Hash, Keys, ParseError};
 use byteorder::{BigEndian, ByteOrder};
-use futures::{Async, Future, Stream};
+use futures::prelude::*;
 use futures::stream::Concat2;
-use hyper::{Body, Chunk, Client, Response, Uri};
+use futures::{Async, Future, Stream};
 use hyper::client::{FutureResponse, HttpConnector};
+use hyper::error::Error as HyperError;
+use hyper::{Body, Chunk, Client, Response, Uri};
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::ops::Try;
 use tokio_core::reactor::{Core, Handle};
 use url::form_urlencoded;
-use std::collections::HashMap;
-use hyper::error::Error as HyperError;
-use std::ops::Try;
-use futures::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct Tracker {
@@ -177,6 +177,7 @@ impl Bencodable for TrackerPeer {
                 (ip, String),
                 (port, usize)
             )),
+            &BencodeT::ByteString(ref vec) => Ok(TrackerPeer::from_binary(&vec)?),
             _ => Err(parse_error!(
                 "Attempted to create TrackerPeer with non-string or dict: {:?}",
                 bencode_t
@@ -341,18 +342,18 @@ impl Tracker {
 #[cfg(test)]
 pub mod tests {
 
-    use bittorrent::tracker::*;
     use bittorrent::bencoder::encode;
     use bittorrent::peer::Peer;
+    use bittorrent::tracker::*;
 
     use futures::future::{ok, Future};
-    use tokio_core::reactor::{Core, Handle};
-    use std::time::Duration;
     use std::thread;
+    use std::time::Duration;
+    use tokio_core::reactor::{Core, Handle};
 
-    use hyper::Error;
     use hyper::header::ContentLength;
     use hyper::server::{Http, Request, Response, Service};
+    use hyper::Error;
 
     #[inline]
     fn place(i: usize, place: usize) -> bool {
@@ -378,22 +379,18 @@ pub mod tests {
     }
 
     pub fn default_tracker(port: &'static usize) -> Vec<TrackerResponse> {
-        vec![
-            TrackerResponse {
-                warning_message: None,
-                interval: 1,
-                min_interval: Some(1),
-                tracker_id: String::from("xyz"),
-                complete: 10,
-                incomplete: 10,
-                peers: vec![
-                    TrackerPeer::Binary {
-                        ip: "127.0.0.1".to_string(),
-                        port: *port,
-                    },
-                ],
-            },
-        ]
+        vec![TrackerResponse {
+            warning_message: None,
+            interval: 1,
+            min_interval: Some(1),
+            tracker_id: String::from("xyz"),
+            complete: 10,
+            incomplete: 10,
+            peers: vec![TrackerPeer::Binary {
+                ip: "127.0.0.1".to_string(),
+                port: *port,
+            }],
+        }]
     }
 
     fn serialize_resp(resp: &TrackerResponse) -> BencodeT {
@@ -454,7 +451,7 @@ pub mod tests {
 
     #[derive(Debug, Clone)]
     struct SimpleServer {
-        resp: String,
+        resp: Vec<u8>,
     }
 
     impl SimpleServer {

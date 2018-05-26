@@ -167,6 +167,7 @@ mod tests {
     use bittorrent::bencoder::encode;
     use bittorrent::utils::create_strings;
     use bittorrent::BencodeT;
+    use std::error::Error;
 
     #[test]
     fn strings() {
@@ -181,6 +182,18 @@ mod tests {
     }
 
     #[test]
+    fn bstrings() {
+        let mut vec = Vec::new();
+        for i in (0..255) {
+            vec.push(i as u8);
+        }
+        match parse(&vec).unwrap() {
+            BencodeT::ByteString(ref vec) => (),
+            _ => assert!(false),
+        }
+    }
+
+    #[test]
     // TODO: larger than i64
     fn digits_basic() {
         assert_eq!(parse("i3e".as_bytes()).unwrap(), BencodeT::Integer(3));
@@ -190,19 +203,18 @@ mod tests {
     #[test]
     fn digits_errors() {
         assert_eq!(
-            parse("i333333".as_bytes()),
-            Err(parse_error!("Incorrect format; exceeded buffer length"))
+            parse("i333333".as_bytes()).unwrap_err().description(),
+            parse_error!("Incorrect format; exceeded buffer length").description()
         );
         assert_eq!(
-            parse("i3-3e".as_bytes()),
-            Err(parse_error!(
-                "Expected int; found character {:?}",
-                '-' as char
-            ))
+            parse("i3-3e".as_bytes()).unwrap_err().description(),
+            parse_error!("Expected int; found character {:?}", '-' as char).description()
         );
         assert_eq!(
-            parse("i7373777788888989898989899898ae".as_bytes()),
-            Err(parse_error!("Expected int; found character {:?}", 'a'))
+            parse("i7373777788888989898989899898ae".as_bytes())
+                .unwrap_err()
+                .description(),
+            parse_error!("Expected int; found character {:?}", 'a').description()
         );
     }
 
@@ -229,8 +241,8 @@ mod tests {
     #[test]
     fn list_errors() {
         assert_eq!(
-            parse("li3e".as_bytes()),
-            Err(parse_error!("Incorrect format; exceeded buffer length"))
+            parse("li3e".as_bytes()).unwrap_err().description(),
+            parse_error!("Incorrect format; exceeded buffer length").description()
         );
     }
 
@@ -244,7 +256,7 @@ mod tests {
         assert_eq!(parse("li1234ee".as_bytes()).unwrap(), l2);
 
         let mut v = Vec::new();
-        let mut s = parse_error!("l");
+        let mut s = String::from("l");
         for i in 1..100 {
             let bi = BencodeT::Integer(i);
             s.push('i');
@@ -267,10 +279,10 @@ mod tests {
 
     fn create_dictionary(keys: Vec<&'static str>, values: Vec<BencodeT>) -> (String, BencodeT) {
         let mut hm = HashMap::new();
-        let mut dictstring = parse_error!("d");
+        let mut dictstring = String::from("d");
         for (key, value) in keys.iter().zip(values.iter()) {
             let hash = encode(&BencodeT::String(calculate_hash(&key)));
-            dictstring.push_str(hash.as_str());
+            dictstring.push_str(&String::from_utf8(hash).unwrap());
             dictstring.push_str(key); // keys are the formatted version of the Bencoded objects
             hm.insert(calculate_hash(&key), value.clone());
         }

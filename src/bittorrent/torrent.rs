@@ -457,6 +457,7 @@ mod tests {
     use bittorrent::torrent::*;
     use bittorrent::utils::gen_random_bytes;
     use bittorrent::{metainfo::BTFile, Piece};
+    use std::fs::remove_dir_all;
     use std::path::PathBuf;
 
     #[test]
