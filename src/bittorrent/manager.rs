@@ -1,7 +1,9 @@
 extern crate core;
 
 use bit_vec::BitVec;
-use bittorrent::{peer::Action, peer::Peer, peer::PeerInfo, torrent,
+
+use bittorrent::timers;
+use bittorrent::{peer::Action, peer::Peer, peer::PeerInfo, timers::Timers, torrent,
                  torrent_runtime::TorrentRuntime, tracker::Tracker, Hash, ParseError, Piece};
 use log::error;
 use priority_queue::PriorityQueue;
@@ -666,6 +668,7 @@ impl Manager {
                             comm.send(PeerUpdate::Have(index));
                         }
                         Action::Bitfield(bitfield) => {
+                            info!("Received bitfield");
                             if peer.peer_choking {
                                 acquire_torrent_lock!(torrents, peer, torrent);
                                 Manager::update_priority_all(&peer, &mut torrent, 1);
@@ -839,6 +842,17 @@ macro_rules! remove_peer {
     };
 }
 
+macro_rules! add_timers {
+    ($wheel:ident, $type:ident, $(($secs:expr, $func:ident)),*) => (
+        $(
+            $wheel.add(Duration::new($secs, 0), {fn anon(a: &mut $type) -> bool {
+                a.$func();
+                false
+            }; anon}).unwrap();
+        )*
+    );
+}
+
 struct Controller {
     recv: mpsc::Receiver<NewPeerMsg>,
     torrents: Arc<Mutex<HashMap<Hash, TorrentRuntime>>>,
@@ -867,33 +881,29 @@ impl Controller {
         }
     }
 
-    // TODO: This is a strong candidate to be replaced by a task system;
-    // Task: returns Option<Update>
     pub fn run_loop(&mut self) {
-        let mut start = Instant::now();
-        let ten_secs = Duration::from_secs(2);
-
         self.choke();
-        loop {
-            if self.recv_client() {
-                break;
-            }
+        let mut wheel = Timers::new(Duration::new(1, 0), self);
 
-            /// Send updates at 1-second interval
-            self.send_update();
+        wheel
+            .add(Duration::new(1, 0), {
+                fn anon(a: &mut Controller) -> bool {
+                    a.recv_client()
+                };                anon
+            })
+            .unwrap();
 
-            /// Receive messages sent when a new peer is added
-            self.try_recv_new_peer();
-
-            self.check_messages();
-
-            // Update choking on 10-sec intervals
-            if start.elapsed() >= ten_secs {
-                self.choke();
-                self.make_requests();
-                start = Instant::now();
-            }
-        }
+        add_timers!(
+            wheel,
+            Controller,
+            (1, send_update),
+            (1, try_recv_new_peer),
+            (1, check_messages),
+            (2, choke),
+            (3, make_requests)
+        );
+        wheel.run_loop();
+        info!("Shutting down");
     }
 
     fn filter_priority<F>(&self, filter: F) -> Vec<Hash>
@@ -956,6 +966,7 @@ impl Controller {
                     }
                 }
                 ClientMsg::Disconnect => {
+                    info!("Received disconnect order");
                     return true;
                 }
             }
@@ -1022,7 +1033,7 @@ impl Controller {
                         }
                     }
                     None => {
-                        trace!("Exhausted possible requests for torrent {}", torrent.name());
+                        info!("Exhausted possible requests for torrent {}", torrent.name());
                         break;
                     }
                 }
@@ -1041,7 +1052,7 @@ impl Controller {
         }
     }
 
-    fn try_recv_new_peer(&mut self) {
+    fn try_recv_new_peer(&mut self) -> bool {
         loop {
             match self.recv.try_recv() {
                 Ok(newpeer) => {
@@ -1055,15 +1066,16 @@ impl Controller {
                 }
                 Err(err) => match err {
                     mpsc::TryRecvError::Empty => {
-                        return;
+                        return false;
                     }
                     mpsc::TryRecvError::Disconnected => {
                         info!("TCP listener thread has shut down. Controller now shutting down.");
-                        return;
+                        return true;
                     }
                 },
             }
         }
+        return false;
     }
 
     /// Check messages from peers
@@ -1278,8 +1290,7 @@ mod tests {
         thread::spawn(move || {
             fn tmp() -> Vec<TrackerResponse> {
                 default_tracker(&1776)
-            }
-            tmp;
+            };
             tests::run_server("127.0.0.1:3000", &tmp);
         });
 
@@ -1298,6 +1309,7 @@ mod tests {
                     Status::Complete => {
                         leecher_rx.send(ClientMsg::Disconnect);
                         seeder_rx.send(ClientMsg::Disconnect);
+                        info!("Complete");
                         return;
                     }
                     _ => (),

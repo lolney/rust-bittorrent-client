@@ -11,3 +11,5 @@ test/threadtest
 test/threadtest\.rs
 
 test/bible-out\.torrent
+
+*.fmt

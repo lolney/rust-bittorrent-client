@@ -1,35 +1,17 @@
 use std::marker::PhantomData;
-use std::ops::Deref;
 use std::ops::SubAssign;
 use std::thread;
 use std::time::Duration;
 
 /// A simple timing wheel
-struct Timers<'a, S: 'a, F>
-where
-    F: Fn(&mut S) -> bool,
-{
-    timers: Vec<Timer<S, F>>,
+pub struct Timers<'a, S: 'a> {
+    timers: Vec<Timer<S>>,
     base: Duration,
     state: &'a mut S,
 }
 
-// TODO: macro to replace run_loop
-// Input: (function and frequency) pairs
-// Generate code
-/*
-loop {
-    thread::sleep(self.base);
-    if timer1.tick() {
-        self.x()
-    }
-}
-*/
-impl<'a, S, F> Timers<'a, S, F>
-where
-    F: Fn(&mut S) -> bool,
-{
-    fn new(base: Duration, state: &mut S) -> Timers<S, F> {
+impl<'a, S> Timers<'a, S> {
+    pub fn new(base: Duration, state: &mut S) -> Timers<S> {
         Timers {
             timers: Vec::new(),
             base: base,
@@ -37,7 +19,11 @@ where
         }
     }
 
-    pub fn add(&mut self, duration: Duration, task: F) -> Result<(), &'static str> {
+    pub fn add(
+        &mut self,
+        duration: Duration,
+        task: fn(&mut S) -> bool,
+    ) -> Result<(), &'static str> {
         if duration.as_secs() % self.base.as_secs() != 0 {
             Err("Duration must be a multiple of base")
         } else {
@@ -50,6 +36,7 @@ where
         loop {
             thread::sleep(self.base);
             if self.tick() {
+                info!("breaking");
                 break;
             }
         }
@@ -65,21 +52,15 @@ where
     }
 }
 
-struct Timer<S, F>
-where
-    F: Fn(&mut S) -> bool,
-{
+struct Timer<S> {
     base: Duration,
     remaining: Duration,
-    task: F,
+    task: fn(&mut S) -> bool,
     phantom: PhantomData<S>,
 }
 
-impl<S, F> Timer<S, F>
-where
-    for<'a> F: Fn(&'a mut S) -> bool,
-{
-    fn new(duration: Duration, task: F) -> Timer<S, F> {
+impl<S> Timer<S> {
+    fn new(duration: Duration, task: fn(&mut S) -> bool) -> Timer<S> {
         Timer {
             base: duration,
             remaining: duration,
@@ -106,31 +87,28 @@ mod tests {
     use bittorrent::timers::*;
     use std::time::{Duration, Instant};
 
+    #[test]
     fn test_loop() {
         // intervals of 1,2,3
-        let max: u64 = 10;
+        let max: u64 = 5;
+        let func = {
+            fn anon(a: &mut u64) -> bool {
+                *a += 1;
+                *a == 5
+            };            anon
+        };
         for interval in 1..4 {
             let now = Instant::now();
             let mut a: u64 = 0;
             {
                 let mut wheel = Timers::new(Duration::new(interval, 0), &mut a);
-                assert!(
-                    wheel
-                        .add(Duration::new(interval, 0), |a| {
-                            *a += interval;
-                            if *a == max {
-                                false
-                            } else {
-                                true
-                            }
-                        })
-                        .is_ok()
-                );
+                assert!(wheel.add(Duration::new(interval, 0), func).is_ok());
                 wheel.run_loop();
             }
-            assert!(a >= max);
-            assert!(now.elapsed() > Duration::new(max, 0));
-            assert!(now.elapsed() < Duration::new(max + 1, 0));
+            assert!(a == max);
+            println!("{}, {}, {:?}", interval, max * interval, now.elapsed());
+            assert!(now.elapsed() > Duration::new(max * interval, 0));
+            assert!(now.elapsed() < Duration::new(max * interval + 1, 0));
         }
     }
 

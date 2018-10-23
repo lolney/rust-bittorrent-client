@@ -488,6 +488,7 @@ pub mod tests {
             .bind(&socket, move || Ok(SimpleServer::new(make_resps)))
             .unwrap();
         server.run();
+        info!("Server has shut down");
     }
 
     #[test]

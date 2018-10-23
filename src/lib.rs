@@ -35,7 +35,7 @@ pub mod bittorrent;
 const HSLEN: usize = 68; // 49 + 19
 const PSTRLEN: u8 = 19;
 const PSTR: &'static str = "BitTorrent protocol";
-const READ_TIMEOUT: u64 = 120; // in seconds
+const READ_TIMEOUT: u64 = 5; // in seconds
 const MSG_SIZE: usize = 1 << 16;
 /// Recommended message size
 const REC_SIZE: usize = 1 << 14;
@@ -46,6 +46,6 @@ const READ_DIR: &'static str = "test/test_read";
 const TEST_FILE: &'static str = "test/torrent.torrent";
 const TEST_BIBLE: &'static str = "test/bible.torrent";
 /// Max outstanding requests per torrent
-const REQUESTS_LIMIT: usize = 1;
+const REQUESTS_LIMIT: usize = 5;
 const MAX_PEERS: usize = 30;
 const PORT_NUM: u16 = 6881;
