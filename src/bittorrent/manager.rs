@@ -32,7 +32,6 @@ use futures::prelude::Stream;
 /// which chooses which pieces to request and which peers to upload to.
 /// Each connection has a `Worker` task, which handles communication with a `Peer`,
 /// reads and writes to disk, and sends relevant updates to the Controller.
-
 pub struct Manager {
     torrents: Arc<Mutex<HashMap<Hash, TorrentRuntime>>>, // u8 is the Info_hash
     peer_id: Hash,                                       // our peer id
@@ -853,6 +852,16 @@ macro_rules! add_timers {
     );
 }
 
+macro_rules! add_terminating_timers {
+    ($wheel:ident, $type:ident, $(($secs:expr, $func:ident)),*) => (
+        $(
+            $wheel.add(Duration::new($secs, 0), {fn anon(a: &mut $type) -> bool {
+                a.$func()
+            }; anon}).unwrap();
+        )*
+    );
+}
+
 struct Controller {
     recv: mpsc::Receiver<NewPeerMsg>,
     torrents: Arc<Mutex<HashMap<Hash, TorrentRuntime>>>,
@@ -885,22 +894,15 @@ impl Controller {
         self.choke();
         let mut wheel = Timers::new(Duration::new(1, 0), self);
 
-        wheel
-            .add(Duration::new(1, 0), {
-                fn anon(a: &mut Controller) -> bool {
-                    a.recv_client()
-                };                anon
-            })
-            .unwrap();
+        add_terminating_timers!(wheel, Controller, (1, recv_client), (1, try_recv_new_peer));
 
         add_timers!(
             wheel,
             Controller,
             (1, send_update),
-            (1, try_recv_new_peer),
             (1, check_messages),
-            (2, choke),
-            (3, make_requests)
+            (5, choke),
+            (5, make_requests)
         );
         wheel.run_loop();
         info!("Shutting down");

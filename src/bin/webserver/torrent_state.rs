@@ -5,7 +5,7 @@ use std::sync::mpsc::SendError;
 
 use std::collections::HashMap;
 
-#[derive(Debug)]
+//#[derive(Debug)]
 pub enum ClientError {
     NotFound,
     Disconnect,
@@ -25,49 +25,95 @@ impl From<SendError<ClientMsg>> for ClientError {
     }
 }
 
-pub struct TorrentState {
+pub trait TorrentState {
+    fn infos<'a>(&'a mut self) -> &'a HashMap<Hash, Info>;
+
+    fn torrent(&mut self, info_hash: String) -> Result<&Info, ClientError> {
+        self.update_state()?;
+        self.infos()
+            .get(&Hash::from(info_hash))
+            .ok_or_else(|| ClientError::NotFound)
+    }
+
+    fn torrents(&mut self) -> Result<Vec<Info>, ClientError> {
+        self.update_state()?;
+        Ok(self.infos().values().map(|info| info.clone()).collect())
+    }
+
+    fn update_state(&mut self) -> Result<(), ClientError>;
+
+    fn add(&mut self, metainfo_path: String, download_path: String) -> Result<(), ClientError>;
+
+    fn remove(&self, info_hash: String) -> Result<(), ClientError>;
+
+    fn pause(&self, info_hash: String) -> Result<(), ClientError>;
+
+    fn resume(&self, info_hash: String) -> Result<(), ClientError>;
+}
+
+pub struct BackedTorrentState {
     manager: Manager,
     channel: BidirectionalChannel<ClientMsg, InfoMsg>,
     infos: HashMap<Hash, Info>,
 }
 
-impl TorrentState {
-    fn new() -> TorrentState {
-        let mut manager = Manager::new();
-        let chan = manager.handle();
-        TorrentState {
-            manager: manager,
-            channel: chan,
-            infos: HashMap::new(),
-        }
+pub struct StaticTorrentState {
+    infos: HashMap<Hash, Info>,
+}
+
+impl TorrentState for StaticTorrentState {
+    fn infos<'a>(&'a mut self) -> &'a HashMap<Hash, Info> {
+        return &self.infos;
     }
 
-    /// Used to mock updates in tests
-    fn mock() -> (TorrentState, BidirectionalChannel<InfoMsg, ClientMsg>) {
-        let (private, public) = BidirectionalChannel::create();
-        let obj = TorrentState {
-            manager: Manager::new(),
-            channel: private,
+    fn update_state(&mut self) -> Result<(), ClientError> {
+        Ok(())
+    }
+
+    fn add(&mut self, metainfo_path: String, download_path: String) -> Result<(), ClientError> {
+        Ok(())
+    }
+
+    fn remove(&self, info_hash: String) -> Result<(), ClientError> {
+        Ok(())
+    }
+
+    fn pause(&self, info_hash: String) -> Result<(), ClientError> {
+        Ok(())
+    }
+
+    fn resume(&self, info_hash: String) -> Result<(), ClientError> {
+        Ok(())
+    }
+}
+
+impl StaticTorrentState {
+    pub fn new() -> StaticTorrentState {
+        let example_torrent: Info = Info {
+            info_hash: Hash::from("XYZ".to_string()),
+            name: "Example".to_string(),
+            status: Status::Running,
+            progress: 0.1f32,
+            up: 100,
+            down: 50,
+            npeers: 5,
+        };
+        let mut obj = StaticTorrentState {
             infos: HashMap::new(),
         };
-        return (obj, public);
+        obj.infos.insert(example_torrent.info_hash, example_torrent);
+        return obj;
     }
+}
 
-    pub fn torrent(&mut self, info_hash: String) -> Result<&Info, ClientError> {
-        self.update_state()?;
-        self.infos
-            .get(&Hash::from(info_hash))
-            .ok_or_else(|| ClientError::NotFound)
-    }
-
-    pub fn torrents(&mut self) -> Result<Vec<&Info>, ClientError> {
-        self.update_state()?;
-        Ok(self.infos.values().collect())
+impl TorrentState for BackedTorrentState {
+    fn infos<'a>(&'a mut self) -> &'a HashMap<Hash, Info> {
+        return &self.infos;
     }
 
     /// Called before any GET request.
     /// Sets state to the latest InfoMsg broadcast
-    pub fn update_state(&mut self) -> Result<(), ClientError> {
+    fn update_state(&mut self) -> Result<(), ClientError> {
         let mut infos_batch: Option<Vec<Info>> = Option::None;
         let mut single_updates = Vec::new();
 
@@ -98,24 +144,47 @@ impl TorrentState {
         Ok(())
     }
 
-    pub fn add(&mut self, metainfo_path: &str, download_path: &str) -> Result<(), ClientError> {
-        self.manager.add_torrent(metainfo_path, download_path)?;
+    fn add(&mut self, metainfo_path: String, download_path: String) -> Result<(), ClientError> {
+        self.manager.add_torrent(&metainfo_path, &download_path)?;
         Ok(())
     }
 
-    pub fn remove(self, info_hash: Hash) -> Result<(), ClientError> {
-        self.channel.send(ClientMsg::Remove(info_hash))?;
+    fn remove(&self, info_hash: String) -> Result<(), ClientError> {
+        self.channel.send(ClientMsg::Remove(Hash::from(info_hash)))?;
         Ok(())
     }
 
-    pub fn pause(self, info_hash: Hash) -> Result<(), ClientError> {
-        self.channel.send(ClientMsg::Pause(info_hash))?;
+    fn pause(&self, info_hash: String) -> Result<(), ClientError> {
+        self.channel.send(ClientMsg::Pause(Hash::from(info_hash)))?;
         Ok(())
     }
 
-    pub fn resume(self, info_hash: Hash) -> Result<(), ClientError> {
-        self.channel.send(ClientMsg::Resume(info_hash))?;
+    fn resume(&self, info_hash: String) -> Result<(), ClientError> {
+        self.channel.send(ClientMsg::Resume(Hash::from(info_hash)))?;
         Ok(())
+    }
+}
+
+impl BackedTorrentState {
+    pub fn new() -> BackedTorrentState {
+        let mut manager = Manager::new();
+        let chan = manager.handle();
+        BackedTorrentState {
+            manager: manager,
+            channel: chan,
+            infos: HashMap::new(),
+        }
+    }
+
+    /// Used to mock updates in tests
+    fn mock() -> (BackedTorrentState, BidirectionalChannel<InfoMsg, ClientMsg>) {
+        let (private, public) = BidirectionalChannel::create();
+        let obj = BackedTorrentState {
+            manager: Manager::new(),
+            channel: private,
+            infos: HashMap::new(),
+        };
+        return (obj, public);
     }
 }
 
@@ -159,7 +228,7 @@ mod tests {
 
     #[test]
     fn test_initial_message() {
-        let (mut state, chan) = TorrentState::mock();
+        let (mut state, chan) = BackedTorrentState::mock();
         // Initial message
         let mut torrents: Vec<Info> = gen10();
         chan.send(InfoMsg::All(torrents.clone()));
@@ -174,7 +243,7 @@ mod tests {
 
     #[test]
     fn test_update_state() {
-        let (mut state, chan) = TorrentState::mock();
+        let (mut state, chan) = BackedTorrentState::mock();
         let batch1 = gen10();
         let batch2 = gen10();
         let mut batch3 = gen10();

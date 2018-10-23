@@ -1,13 +1,16 @@
 # Rust-Bittorrent-Client
 
-An implementation of the Bittorrent spec in Rust, along with a terminal-based client (uses the ncurses toolkit). Note: pre-release, still undergoing rapid changes.
+An implementation of the Bittorrent spec in Rust.
+
+Also contains a webserver that can be used alongside [this web client](https://github.com/lolney/bittorrent-web-client).
+Note: pre-release, still undergoing rapid changes.
 
 ## Running the client
 
 ```
 git clone https://github.com/lolney/rust-bittorrent-client.git
 cd rust-bittorrent-client
-cargo run
+cargo run --bin rust-bittorrent-webserver
 ```
 
 ## Using the library
@@ -25,18 +28,20 @@ fn main() {
     thread::spawn(move || {
         match rx.recv() {
             Ok(v) => println!({":?"}, v);
-            Err(e) => println!("Error receiving update: {:?}", e); 
+            Err(e) => println!("Error receiving update: {:?}", e);
         }
     })
 
     // Adding a torrent
     manager.add_torrent(
-        "/path/to/torrent_file.torrent", 
+        "/path/to/torrent_file.torrent",
         "/path/to/download/directory",
     );
 }
 ```
+
 Manager updates are of type `bittorrent::manager::InfoMsg`:
+
 ```
 enum InfoMsg {
     All(Vec<Info>),
