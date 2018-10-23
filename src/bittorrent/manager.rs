@@ -13,7 +13,6 @@ use std::fmt;
 use std::io::Error as IOError;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::ops::SubAssign;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::mpsc;
 use std::sync::mpsc::SendError;
@@ -23,7 +22,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::usize::MAX;
 use tokio_core::reactor::Core;
-use tokio_timer::Interval;
 
 use futures::prelude::Stream;
 
@@ -849,94 +847,6 @@ struct Controller {
     peer_priority: PriorityQueue<Hash, PeerPriority>,
     peers: HashMap<Hash, BidirectionalChannel<ManagerUpdate, PeerUpdate>>,
     bitfields: HashMap<Hash, BitVec>,
-}
-
-struct Timers<F>
-where
-    F: Fn() -> bool,
-{
-    timers: Vec<Timer<F>>,
-    base: Duration,
-}
-
-// TODO: macro
-// Input: (function and frequency) pairs
-// Generate code
-/*
-{
-
-}
-*/
-impl<F> Timers<F>
-where
-    F: Fn() -> bool,
-{
-    fn new(base: Duration) -> Timers<F> {
-        Timers {
-            timers: Vec::new(),
-            base: base,
-        }
-    }
-
-    pub fn add(&mut self, duration: Duration, task: F) -> Result<(), &'static str> {
-        if duration.as_secs() % self.base.as_secs() != 0 {
-            Err("Duration must be a multiple of base")
-        } else {
-            self.timers.push(Timer::new(duration, task));
-            Ok(())
-        }
-    }
-
-    pub fn run_loop(&mut self) {
-        loop {
-            thread::sleep(self.base);
-            if self.tick() {
-                break;
-            }
-        }
-    }
-
-    fn tick(&mut self) -> bool {
-        for timer in self.timers.iter_mut() {
-            if timer.tick(self.base) {
-                return true;
-            }
-        }
-        return false;
-    }
-}
-
-struct Timer<F>
-where
-    F: Fn() -> bool,
-{
-    base: Duration,
-    remaining: Duration,
-    task: F,
-}
-
-impl<F> Timer<F>
-where
-    F: Fn() -> bool,
-{
-    fn new(duration: Duration, task: F) -> Timer<F> {
-        Timer {
-            base: duration,
-            remaining: duration,
-            task: task,
-        }
-    }
-
-    pub fn tick(&mut self, delta: Duration) -> bool {
-        self.remaining.sub_assign(self.base);
-
-        if self.remaining <= Duration::from_secs(0) {
-            self.remaining = self.base;
-            return (self.task)();
-        } else {
-            return false;
-        }
-    }
 }
 
 impl Controller {

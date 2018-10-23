@@ -38,6 +38,21 @@ fn torrent(info_hash: String) -> Json<Info> {
     Json(example_torrent())
 }
 
+#[post("/torrents/<info_hash>/pause")]
+fn pause(info_hash: String) -> Json<Info> {
+    Json(example_torrent())
+}
+
+#[post("/torrents/<info_hash>/start")]
+fn start(info_hash: String) -> Json<Info> {
+    Json(example_torrent())
+}
+
+#[post("/torrents/<info_hash>/remove")]
+fn remove(info_hash: String) -> Json<Info> {
+    Json(example_torrent())
+}
+
 fn main() {
     let (allowed_origins, failed_origins) =
         AllowedOrigins::some(&["null", "http://localhost:8080"]);

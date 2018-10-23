@@ -514,6 +514,7 @@ mod bencoder;
 pub mod manager;
 mod metainfo;
 mod peer;
+mod timers;
 mod torrent;
 mod torrent_runtime;
 mod tracker;
