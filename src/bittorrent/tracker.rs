@@ -220,6 +220,7 @@ pub struct RequestStream {
 
 impl RequestStream {
     fn new(urls: Vec<Uri>, client: Client<HttpConnector>) -> RequestStream {
+        info!("Initializing with tracker URIs: {:?}", urls);
         let reqs = urls.iter().map(|url| client.get(url.clone())).collect();
         return RequestStream { reqs: reqs };
     }

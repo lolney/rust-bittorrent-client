@@ -43,11 +43,11 @@ where
 impl<'r> Responder<'r> for ClientError {
     fn respond_to(self, req: &Request) -> RocketResult<'r> {
         match self {
-            NotFound => Response::build()
+            ClientError::NotFound => Response::build()
                 .status(Status::NotFound)
                 .sized_body(Cursor::new("Torrent does not exist"))
                 .ok(),
-            Disconnect => Response::build()
+            ClientError::Disconnect => Response::build()
                 .status(Status::InternalServerError)
                 .sized_body(Cursor::new("Disconnected from manager"))
                 .ok(),

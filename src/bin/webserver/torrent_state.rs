@@ -5,7 +5,7 @@ use std::sync::mpsc::SendError;
 
 use std::collections::HashMap;
 
-//#[derive(Debug)]
+#[derive(Debug)]
 pub enum ClientError {
     NotFound,
     Disconnect,
@@ -118,6 +118,7 @@ impl TorrentState for BackedTorrentState {
         let mut single_updates = Vec::new();
 
         for msg in self.channel.try_iter() {
+            println!("Msg: {:?}", msg);
             match msg {
                 InfoMsg::All(vec) => {
                     single_updates.clear();
@@ -214,15 +215,15 @@ mod tests {
         vec
     }
 
-    fn unwrap_and_sort(state: &mut TorrentState) -> Vec<&Info> {
+    fn unwrap_and_sort(state: &mut TorrentState) -> Vec<Info> {
         let mut vec = state.torrents().unwrap();
         vec.sort();
         vec
     }
 
-    fn compare_all(sent: &Vec<&Info>, original: &Vec<Info>) {
+    fn compare_all(sent: &Vec<Info>, original: &Vec<Info>) {
         for (a, b) in sent.iter().zip(original.iter()) {
-            assert_eq!(*a, b);
+            assert_eq!(a, b);
         }
     }
 

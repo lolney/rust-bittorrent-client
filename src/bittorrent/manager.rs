@@ -796,7 +796,7 @@ impl Manager {
         thread::spawn(move || {
             // listens for incoming connections
             let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
-                .expect("Failed to bind listening port");
+                .expect(&format!("Failed to bind listening port: {}", port));
             info!(
                 "Listening on port {} for new peers as peer {}",
                 port, peer_id
@@ -817,6 +817,7 @@ impl Manager {
         let npeers = self.npeers.clone();
         let (info_send, info_recv) = BidirectionalChannel::create();
         thread::spawn(move || {
+            info!("Starting server");
             Controller::new(manager_recv, torrents, npeers, info_send).run_loop();
         });
 
@@ -1187,7 +1188,7 @@ mod tests {
     use bittorrent::tracker::TrackerResponse;
     use env_logger;
 
-    /// Allows access to all these variables without copy-pasting the setup every time
+    /// Allows access to all these variables in repeated setup
     macro_rules! controller_setup {
         (
             $controller:ident, $manager_send:ident, $npeers:ident, $info_hash:ident, $npieces:ident
