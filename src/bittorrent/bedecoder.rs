@@ -182,18 +182,6 @@ mod tests {
     }
 
     #[test]
-    fn bstrings() {
-        let mut vec = Vec::new();
-        for i in (0..255) {
-            vec.push(i as u8);
-        }
-        match parse(&vec).unwrap() {
-            BencodeT::ByteString(ref vec) => (),
-            _ => assert!(false),
-        }
-    }
-
-    #[test]
     // TODO: larger than i64
     fn digits_basic() {
         assert_eq!(parse("i3e".as_bytes()).unwrap(), BencodeT::Integer(3));

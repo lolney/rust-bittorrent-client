@@ -171,7 +171,7 @@ impl TorrentState for BackedTorrentState {
 
 impl BackedTorrentState {
     pub fn new() -> BackedTorrentState {
-        let mut manager = Manager::new();
+        let mut manager = Manager::new().port(0);
         let chan = manager.handle();
         BackedTorrentState {
             manager: manager,

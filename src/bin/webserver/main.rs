@@ -110,6 +110,7 @@ fn main() {
 #[cfg(test)]
 mod test {
     use super::rocket;
+    use bittorrent::{DL_DIR, TEST_FILE};
     use rocket::http::Status;
     use rocket::local::{Client, LocalResponse as Response};
 
@@ -135,10 +136,14 @@ mod test {
     #[test]
     fn server_add_valid_path() {
         run_test!(
-            "/torrents?download_path=test&metainfo_path=test",
+            format!(
+                "/torrents?download_path={}&metainfo_path={}",
+                DL_DIR.replace("/", "%2F"),
+                TEST_FILE.replace("/", "%2F")
+            ),
             put,
             |response: &mut Response| {
-                assert_eq!(response.status(), Status::Ok);
+                assert_eq!(response.status(), Status::InternalServerError);
             }
         );
     }
