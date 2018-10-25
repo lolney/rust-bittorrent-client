@@ -1,7 +1,9 @@
+use hex::{FromHex, FromHexError, ToHex};
 use hyper::error::Error as HyperError;
 use hyper::error::UriError;
 use rand;
 use rand::Rng;
+use serde::{Serialize, Serializer};
 use std::collections::HashMap;
 use std::default::Default;
 use std::error::Error;
@@ -27,27 +29,29 @@ pub enum ParseError {
     Uri(String, UriError),
 }
 
-#[derive(Hash, Ord, PartialOrd, Eq, PartialEq, Clone, Debug, Default, Copy, Serialize,
-         Deserialize)]
+macro_rules! parse_error {
+    ($ ( $ arg : expr ), *) => {
+        ParseError::new(
+            format!($( $arg),*)
+        )
+    }
+}
+
+#[derive(Hash, Ord, PartialOrd, Eq, PartialEq, Clone, Debug, Default, Copy, Deserialize)]
 pub struct Hash(pub [u8; 20]);
+
+impl Serialize for Hash {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0.to_hex())
+    }
+}
 
 impl From<[u8; 20]> for Hash {
     fn from(bytes: [u8; 20]) -> Self {
         Hash(bytes)
-    }
-}
-
-impl From<String> for Hash {
-    fn from(string: String) -> Self {
-        let mut arr: [u8; 20] = [0; 20];
-        let bytes = string.as_bytes();
-        if bytes.len() >= 20 {
-            arr.copy_from_slice(&bytes[..20]);
-        } else {
-            let (mut left, _) = arr.split_at_mut(bytes.len());
-            left.copy_from_slice(&bytes);
-        }
-        Hash(arr)
     }
 }
 
@@ -85,6 +89,18 @@ impl Hash {
         }
         return id;
     }
+
+    pub fn from_str(string: String) -> Result<Self, ParseError> {
+        let vec: Vec<u8> = FromHex::from_hex(string.clone())?;
+
+        let mut arr: [u8; 20] = [0; 20];
+        if vec.len() >= 20 {
+            arr.copy_from_slice(&vec[..20]);
+            Ok(Hash(arr))
+        } else {
+            Err(parse_error!("String must be 40 hex digits: {}", string))
+        }
+    }
 }
 
 // TODO: this needs an overhaul (boxing errors? using traits?)
@@ -121,6 +137,15 @@ impl ParseError {
 impl From<IOError> for ParseError {
     fn from(error: IOError) -> Self {
         ParseError::new_cause("", error)
+    }
+}
+
+impl From<FromHexError> for ParseError {
+    fn from(error: FromHexError) -> Self {
+        ParseError::new(format!(
+            "String is not a hex string: {:?}",
+            error.description()
+        ))
     }
 }
 
@@ -278,14 +303,6 @@ pub trait Bencodable: Clone {
     fn from_BencodeT(bencode_t: &BencodeT) -> Result<Self, ParseError>
     where
         Self: Sized;
-}
-
-macro_rules! parse_error {
-    ($ ( $ arg : expr ), *) => {
-        ParseError::new(
-            format!($( $arg),*)
-        )
-    }
 }
 
 impl Bencodable for String {

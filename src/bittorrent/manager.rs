@@ -965,7 +965,7 @@ impl Controller {
                             remove_peer!(self, peer_id);
                         }
                     } else {
-                        error!("Tried to remove torrent that does not exist");
+                        error!("Tried to remove torrent that does not exist: {}", info_hash);
                     }
                 }
                 ClientMsg::Disconnect => {

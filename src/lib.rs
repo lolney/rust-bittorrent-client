@@ -28,6 +28,7 @@ extern crate url;
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
+extern crate hex;
 
 #[macro_use]
 pub mod bittorrent;

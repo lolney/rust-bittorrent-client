@@ -31,7 +31,7 @@ pub trait TorrentState {
     fn torrent(&mut self, info_hash: String) -> Result<&Info, ClientError> {
         self.update_state()?;
         self.infos()
-            .get(&Hash::from(info_hash))
+            .get(&Hash::from_str(info_hash)?)
             .ok_or_else(|| ClientError::NotFound)
     }
 
@@ -90,7 +90,7 @@ impl TorrentState for StaticTorrentState {
 impl StaticTorrentState {
     pub fn new() -> StaticTorrentState {
         let example_torrent: Info = Info {
-            info_hash: Hash::from("XYZ".to_string()),
+            info_hash: Hash::from_str("XYZ".to_string()).unwrap(),
             name: "Example".to_string(),
             status: Status::Running,
             progress: 0.1f32,
@@ -151,17 +151,20 @@ impl TorrentState for BackedTorrentState {
     }
 
     fn remove(&self, info_hash: String) -> Result<(), ClientError> {
-        self.channel.send(ClientMsg::Remove(Hash::from(info_hash)))?;
+        self.channel
+            .send(ClientMsg::Remove(Hash::from_str(info_hash)?))?;
         Ok(())
     }
 
     fn pause(&self, info_hash: String) -> Result<(), ClientError> {
-        self.channel.send(ClientMsg::Pause(Hash::from(info_hash)))?;
+        self.channel
+            .send(ClientMsg::Pause(Hash::from_str(info_hash)?))?;
         Ok(())
     }
 
     fn resume(&self, info_hash: String) -> Result<(), ClientError> {
-        self.channel.send(ClientMsg::Resume(Hash::from(info_hash)))?;
+        self.channel
+            .send(ClientMsg::Resume(Hash::from_str(info_hash)?))?;
         Ok(())
     }
 }
