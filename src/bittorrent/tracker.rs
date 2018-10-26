@@ -379,19 +379,22 @@ pub mod tests {
             .collect()
     }
 
-    pub fn default_tracker(port: &'static usize) -> Vec<TrackerResponse> {
-        vec![TrackerResponse {
-            warning_message: None,
-            interval: 1,
-            min_interval: Some(1),
-            tracker_id: String::from("xyz"),
-            complete: 10,
-            incomplete: 10,
-            peers: vec![TrackerPeer::Binary {
-                ip: "127.0.0.1".to_string(),
-                port: *port,
-            }],
-        }]
+    pub fn default_tracker(ports: &[usize]) -> Vec<TrackerResponse> {
+        ports
+            .iter()
+            .map(|port| TrackerResponse {
+                warning_message: None,
+                interval: 1,
+                min_interval: Some(1),
+                tracker_id: String::from("xyz"),
+                complete: 10,
+                incomplete: 10,
+                peers: vec![TrackerPeer::Binary {
+                    ip: "127.0.0.1".to_string(),
+                    port: *port,
+                }],
+            })
+            .collect()
     }
 
     fn serialize_resp(resp: &TrackerResponse) -> BencodeT {

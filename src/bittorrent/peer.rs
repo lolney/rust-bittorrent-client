@@ -20,6 +20,7 @@ pub struct Peer {
 
 #[derive(Debug, PartialEq)]
 pub enum Action {
+    EOF,
     Request(Vec<Piece>),
     Write(PieceData),
     InterestedChange,
@@ -51,15 +52,13 @@ macro_rules! message {
     }
 
 macro_rules! message_from_bytes {
-        ($len:expr,$id:expr,$bytes:expr$(, $other:expr)*) => {
-            {
-                let mut vec = message!($len, $id$(, $other)*);
-                vec.extend_from_slice(&$bytes);
+    ($len:expr, $id:expr, $bytes:expr $(, $other:expr)*) => {{
+        let mut vec = message!($len, $id $(, $other)*);
+        vec.extend_from_slice(&$bytes);
 
-                vec
-            }
-        };
-    }
+        vec
+    }};
+}
 
 macro_rules! byte_slice_from_u32s {
     ($($int:expr),*) => {
@@ -110,20 +109,28 @@ impl Peer {
     }
 
     pub fn parse_message(&mut self, msg: &[u8]) -> Result<Action, ParseError> {
+        if msg.len() == 0 {
+            return Ok(Action::EOF);
+        }
         if msg.len() < 4 {
-            return Err(parse_error!("Received message of length less than 4"));
+            return Err(parse_error!(
+                "Received message of length less than 4: {:?}",
+                msg
+            ));
         }
         self.time = 0;
-        let len: u32 = BigEndian::read_u32(&msg[0..4]); // parse u32
+        let len: u32 = BigEndian::read_u32(&msg[0..4]);
         if len == 0 {
             Ok(Action::None) // keep alive
         } else {
-            if msg.len() != 4 + len as usize {
+            if msg.len() < 4 + len as usize {
                 return Err(parse_error!(
                     "Reported message length {} does not match actual length {}",
                     len + 4,
                     msg.len()
                 ));
+            } else if msg.len() == 4 {
+                return Err(parse_error!("Message length cannot be equal to 4"));
             }
             let id = msg[4];
 
@@ -444,7 +451,7 @@ mod tests {
         let bitfield = message!(5u32, 5u8, 0b01000000000000000000000000000001 as u32);
         assert_eq!(
             Peer::bitfield(&BitVec::from_bytes(&[
-                0b01000000, 0b00000000, 0b00000000, 0b00000001
+                0b01000000, 0b00000000, 0b00000000, 0b00000001,
             ])),
             bitfield
         );

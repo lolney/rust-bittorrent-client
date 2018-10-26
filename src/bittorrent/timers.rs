@@ -36,7 +36,6 @@ impl<'a, S> Timers<'a, S> {
         loop {
             thread::sleep(self.base);
             if self.tick() {
-                info!("breaking");
                 break;
             }
         }

@@ -603,6 +603,14 @@ impl Manager {
                 }
                 Ok(n) => match peer.parse_message(&buf[0..n]) {
                     Ok(action) => match action {
+                        Action::EOF => {
+                            warn!(
+                                "Received empty message from {}; disconnecting",
+                                peer.peer_id()
+                            );
+                            comm.send(PeerUpdate::Disconnect).unwrap();
+                            return Ok(());
+                        }
                         Action::Request(requests) => {
                             info!("Fullfilling request for peer {}", peer.peer_id());
                             acquire_torrent_lock!(torrents, peer, torrent);
@@ -642,15 +650,19 @@ impl Manager {
                             }
                         }
                         Action::InterestedChange => {
-                            trace!(
+                            info!(
                                 "Peer {} interested status now: {:?}",
                                 peer.peer_id(),
-                                peer.peer_interested
+                                !peer.peer_interested
                             );
                             comm.send(PeerUpdate::InterestedChange);
                         }
                         Action::ChokingChange => {
-                            info!("Received choking change");
+                            info!(
+                                "Peer {} choking us now: {:?}",
+                                peer.peer_id(),
+                                peer.peer_choking
+                            );
                             acquire_torrent_lock!(torrents, peer, torrent);
                             if peer.peer_choking {
                                 Manager::update_priority_all(&peer, &mut torrent, -1);
@@ -667,8 +679,8 @@ impl Manager {
                             comm.send(PeerUpdate::Have(index));
                         }
                         Action::Bitfield(bitfield) => {
-                            info!("Received bitfield");
-                            if peer.peer_choking {
+                            info!("Received bitfield from {}", peer.peer_id());
+                            if !peer.peer_choking {
                                 acquire_torrent_lock!(torrents, peer, torrent);
                                 Manager::update_priority_all(&peer, &mut torrent, 1);
                             }
@@ -694,6 +706,7 @@ impl Manager {
                 }
                 ManagerUpdate::Choke => {
                     if !peer.am_choking {
+                        info!("Choking peer {}", peer.peer_id());
                         stream.write(peer.choke(true).as_slice());
                     }
                 }
@@ -705,7 +718,7 @@ impl Manager {
                 }
                 ManagerUpdate::Disconnect => {
                     info!(
-                        "Manager has ordered disconnect from peer {}",
+                        "Disconnected from manager. Shutting down peer {}",
                         peer.peer_id()
                     );
                     return Ok(());
@@ -749,7 +762,7 @@ impl Manager {
     ) {
         match stream {
             Ok(mut stream) => {
-                if npeers.load(AtomicOrdering::SeqCst) >= ::MAX_PEERS {
+                if npeers.load(AtomicOrdering::SeqCst) > ::MAX_PEERS {
                     stream.shutdown(Shutdown::Both);
                     warn!(
                         "Max numbers of peers {} reached; rejecting new connection",
@@ -839,6 +852,9 @@ macro_rules! remove_peer {
         remove(&mut $self.peer_priority, $peer_id);
         $self.bitfields.remove($peer_id);
         $self.peers.remove($peer_id);
+        if $self.peers.len() == 0 {
+            info!("All peers have disconnected");
+        }
     };
 }
 
@@ -1033,6 +1049,7 @@ impl Controller {
                                 info!("Requesting piece {:?} from peer {}", piece, id);
                                 break;
                             }
+                            info!("No peer has this piece");
                         }
                     }
                     None => {
@@ -1290,35 +1307,58 @@ mod tests {
     #[test]
     fn test_send_receive() {
         let _ = env_logger::init();
+        let seeder_ports = 1700..1701;
+        let leecher_ports = 1751..1751 + ::MAX_PEERS as u16 + 1;
+
         thread::spawn(move || {
             fn tmp() -> Vec<TrackerResponse> {
-                default_tracker(&1776)
+                let seeder_vec: Vec<usize> = (1700..1701 + ::MAX_PEERS + 1).collect();
+                default_tracker(&seeder_vec)
             };
             tests::run_server("127.0.0.1:3000", &tmp);
         });
 
-        let (mut seeder, seeder_rx) = create_manager(1776);
-        seeder.add_completed_torrent(::TEST_FILE, &format!("{}/{}", ::READ_DIR, "valid_torrent"));
+        let seeder_rxs: Vec<BidirectionalChannel<ClientMsg, InfoMsg>> = seeder_ports
+            .map(|port| {
+                let (mut seeder, seeder_rx) = create_manager(port);
+                seeder
+                    .add_completed_torrent(
+                        ::TEST_FILE,
+                        &format!("{}/{}", ::READ_DIR, "valid_torrent"),
+                    )
+                    .unwrap();
+                seeder_rx
+            })
+            .collect();
 
-        let (mut leecher, leecher_rx) = create_manager(1777);
-        leecher.add_torrent(
-            ::TEST_FILE,
-            &format!("{}/{}", ::DL_DIR, "test_send_receive"),
-        );
+        let mut leecher_rxs: Vec<BidirectionalChannel<ClientMsg, InfoMsg>> = leecher_ports
+            .map(|port| {
+                let (mut leecher, leecher_rx) = create_manager(port);
+                leecher
+                    .add_torrent(
+                        ::TEST_FILE,
+                        &format!("{}/{}/{}", ::DL_DIR, "test_send_receive", port),
+                    )
+                    .unwrap();
+                leecher_rx
+            })
+            .collect();
 
-        loop {
-            match leecher_rx.recv() {
+        while leecher_rxs.len() > 0 {
+            leecher_rxs.retain(|leecher_rx| match leecher_rx.recv() {
                 InfoMsg::One(info) => match info.status {
                     Status::Complete => {
-                        leecher_rx.send(ClientMsg::Disconnect);
-                        seeder_rx.send(ClientMsg::Disconnect);
-                        info!("Complete");
-                        return;
+                        leecher_rx.send(ClientMsg::Disconnect).unwrap();
+                        false
                     }
-                    _ => (),
+                    _ => true,
                 },
-                _ => (),
-            }
+                _ => true,
+            });
+        }
+
+        for seeder_rx in seeder_rxs {
+            seeder_rx.send(ClientMsg::Disconnect).unwrap();
         }
     }
 
