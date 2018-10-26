@@ -3,7 +3,8 @@
 An implementation of the Bittorrent spec in Rust.
 
 Also contains a webserver that can be used alongside [this web client](https://github.com/lolney/bittorrent-web-client).
-Note: pre-release, still undergoing rapid changes.
+
+Note: while the basic protocol works, it currently lacks major features like udp tracker support or resuming from partially-completed torrents.
 
 ## Running the client
 
