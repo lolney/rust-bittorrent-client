@@ -1205,6 +1205,9 @@ mod tests {
     use bittorrent::tracker::TrackerResponse;
     use env_logger;
 
+    use std::thread::sleep;
+    use std::time::Duration;
+
     /// Allows access to all these variables in repeated setup
     macro_rules! controller_setup {
         (
@@ -1263,6 +1266,31 @@ mod tests {
         return (manager, comm);
     }
 
+    fn add_torrents(
+        ports: &[u16],
+        metainfo_path: &str,
+        dl_path: &str,
+        completed: bool,
+    ) -> Vec<BidirectionalChannel<ClientMsg, InfoMsg>> {
+        ports
+            .iter()
+            .map(|port| {
+                let (mut manager, rx) = create_manager(*port);
+                if !completed {
+                    manager
+                        .add_torrent(metainfo_path, &format!("{}/{}", dl_path, port))
+                        .unwrap();
+                } else {
+                    manager
+                        .add_completed_torrent(metainfo_path, dl_path)
+                        .unwrap();
+                };
+
+                rx
+            })
+            .collect()
+    }
+
     #[test]
     fn test_client_msgs() {
         controller_setup!(
@@ -1307,42 +1335,32 @@ mod tests {
     #[test]
     fn test_send_receive() {
         let _ = env_logger::init();
-        let seeder_ports = 1700..1701;
-        let leecher_ports = 1751..1751 + ::MAX_PEERS as u16 + 1;
+        let seeder_ports: Vec<u16> = (1700..1701).collect();
+        let leecher_ports: Vec<u16> = (1751..1751 + ::MAX_PEERS as u16 + 1).collect();
 
         thread::spawn(move || {
-            fn tmp() -> Vec<TrackerResponse> {
-                let seeder_vec: Vec<usize> = (1700..1701 + ::MAX_PEERS + 1).collect();
+            fn tmp() -> TrackerResponse {
+                let seeder_vec: Vec<usize> = (1700..1701).collect();
                 default_tracker(&seeder_vec)
             };
             tests::run_server("127.0.0.1:3000", &tmp);
         });
 
-        let seeder_rxs: Vec<BidirectionalChannel<ClientMsg, InfoMsg>> = seeder_ports
-            .map(|port| {
-                let (mut seeder, seeder_rx) = create_manager(port);
-                seeder
-                    .add_completed_torrent(
-                        ::TEST_FILE,
-                        &format!("{}/{}", ::READ_DIR, "valid_torrent"),
-                    )
-                    .unwrap();
-                seeder_rx
-            })
-            .collect();
+        sleep(Duration::new(0, 1000));
 
-        let mut leecher_rxs: Vec<BidirectionalChannel<ClientMsg, InfoMsg>> = leecher_ports
-            .map(|port| {
-                let (mut leecher, leecher_rx) = create_manager(port);
-                leecher
-                    .add_torrent(
-                        ::TEST_FILE,
-                        &format!("{}/{}/{}", ::DL_DIR, "test_send_receive", port),
-                    )
-                    .unwrap();
-                leecher_rx
-            })
-            .collect();
+        let seeder_rxs = add_torrents(
+            &seeder_ports,
+            ::TEST_FILE,
+            &format!("{}/{}", ::READ_DIR, "valid_torrent"),
+            true,
+        );
+
+        let mut leecher_rxs = add_torrents(
+            &leecher_ports,
+            ::TEST_FILE,
+            &format!("{}/{}", ::DL_DIR, "test_send_receive"),
+            false,
+        );
 
         while leecher_rxs.len() > 0 {
             leecher_rxs.retain(|leecher_rx| match leecher_rx.recv() {

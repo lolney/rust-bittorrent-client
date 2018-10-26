@@ -13,3 +13,5 @@ test/threadtest\.rs
 test/bible-out\.torrent
 
 *.fmt
+
+test/test_write/

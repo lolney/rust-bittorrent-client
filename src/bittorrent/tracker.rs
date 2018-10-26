@@ -37,7 +37,7 @@ pub struct TrackerResponse {
     peers: Vec<TrackerPeer>,
 }
 
-impl TrackerResponse {
+impl Bencodable for TrackerResponse {
     fn from_BencodeT(bencode_t: &BencodeT) -> Result<TrackerResponse, ParseError> {
         match bencode_t {
             &BencodeT::Dictionary(ref hm) => {
@@ -61,6 +61,20 @@ impl TrackerResponse {
                 bencode_t
             )),
         }
+    }
+
+    fn to_BencodeT(self: TrackerResponse) -> BencodeT {
+        let hm = to_keys_serialize!{
+            self,
+            (warning_message, OptionString),
+            (interval, i64),
+            (min_interval, Optioni64),
+            (tracker_id, String),
+            (complete, i64),
+            (incomplete, i64),
+            (peers, VecTrackerPeer)
+        };
+        BencodeT::Dictionary(hm)
     }
 }
 
@@ -361,54 +375,42 @@ pub mod tests {
         i & (1 << place) != 0
     }
 
-    fn make_resps() -> Vec<TrackerResponse> {
-        (0..8)
-            .map(|i| TrackerResponse {
-                warning_message: if place(i, 0) {
-                    None
-                } else {
-                    Some("msg".to_string())
-                },
-                interval: 1,
-                min_interval: if place(i, 1) { None } else { Some(1) },
-                tracker_id: String::from("xyz"),
-                complete: 10,
-                incomplete: 10,
-                peers: make_trackerpeers(20, place(i, 2)),
-            })
-            .collect()
+    fn make_resps(i: usize) -> TrackerResponse {
+        TrackerResponse {
+            warning_message: if place(i, 0) {
+                None
+            } else {
+                Some("msg".to_string())
+            },
+            interval: 1,
+            min_interval: if place(i, 1) { None } else { Some(1) },
+            tracker_id: String::from("xyz"),
+            complete: 10,
+            incomplete: 10,
+            peers: make_trackerpeers(20, place(i, 2)),
+        }
     }
 
-    pub fn default_tracker(ports: &[usize]) -> Vec<TrackerResponse> {
-        ports
-            .iter()
-            .map(|port| TrackerResponse {
-                warning_message: None,
-                interval: 1,
-                min_interval: Some(1),
-                tracker_id: String::from("xyz"),
-                complete: 10,
-                incomplete: 10,
-                peers: vec![TrackerPeer::Binary {
+    fn make_resp() -> TrackerResponse {
+        make_resps(5)
+    }
+
+    pub fn default_tracker(ports: &[usize]) -> TrackerResponse {
+        TrackerResponse {
+            warning_message: None,
+            interval: 1,
+            min_interval: Some(1),
+            tracker_id: String::from("xyz"),
+            complete: 10,
+            incomplete: 10,
+            peers: ports
+                .iter()
+                .map(|port| TrackerPeer::Binary {
                     ip: "127.0.0.1".to_string(),
                     port: *port,
-                }],
-            })
-            .collect()
-    }
-
-    fn serialize_resp(resp: &TrackerResponse) -> BencodeT {
-        let hm = to_keys_serialize!{
-            resp,
-            (warning_message, OptionString),
-            (interval, i64),
-            (min_interval, Optioni64),
-            (tracker_id, String),
-            (complete, i64),
-            (incomplete, i64),
-            (peers, VecTrackerPeer)
-        };
-        BencodeT::Dictionary(hm)
+                })
+                .collect(),
+        }
     }
 
     fn make_trackerpeers(n: usize, binary: bool) -> VecTrackerPeer {
@@ -429,10 +431,11 @@ pub mod tests {
 
     #[test]
     fn test_tracker_resp() {
-        for resp in make_resps() {
+        for resp in (0..8).map(|i| make_resps(i)) {
             assert_eq!(
                 resp,
-                TrackerResponse::from_BencodeT(&serialize_resp(&resp)).unwrap()
+                TrackerResponse::from_BencodeT(&TrackerResponse::to_BencodeT(resp.clone()))
+                    .unwrap()
             );
         }
     }
@@ -461,11 +464,11 @@ pub mod tests {
     impl SimpleServer {
         fn new<F>(make_resps: F) -> SimpleServer
         where
-            F: Fn() -> Vec<TrackerResponse>,
+            F: Fn() -> TrackerResponse,
         {
-            let responses = make_resps();
+            let response = make_resps();
             SimpleServer {
-                resp: encode(&serialize_resp(&responses[0])),
+                resp: encode(&response.to_BencodeT()),
             }
         }
     }
@@ -485,7 +488,7 @@ pub mod tests {
 
     pub fn run_server<F>(addr: &str, make_resps: &'static F)
     where
-        F: Fn() -> Vec<TrackerResponse>,
+        F: Fn() -> TrackerResponse,
     {
         let socket = addr.parse().unwrap();
         let server = Http::new()
@@ -504,16 +507,14 @@ pub mod tests {
             .into_iter()
             .map(|s| s.to_string())
             .collect();
-        let responses = make_resps();
-
-        let resp = &responses[0];
+        let resp = make_resp();
 
         let mut core = Core::new().unwrap();
 
         // Setup server
         let url = urls[0].clone();
         thread::spawn(move || {
-            run_server(&url, &make_resps);
+            run_server(&url, &make_resp);
         });
 
         let stream = Tracker::get_peers(
