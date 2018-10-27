@@ -2,9 +2,9 @@ extern crate core;
 
 use bit_vec::BitVec;
 
-use bittorrent::timers;
-use bittorrent::{peer::Action, peer::Peer, peer::PeerInfo, timers::Timers, torrent,
-                 torrent_runtime::TorrentRuntime, tracker::Tracker, Hash, ParseError, Piece};
+use bittorrent::{metainfo::MetaInfo, peer::Action, peer::Peer, peer::PeerInfo, timers::Timers,
+                 torrent, torrent_runtime::TorrentRuntime, tracker::Tracker, Hash, ParseError,
+                 Piece};
 use log::error;
 use priority_queue::PriorityQueue;
 use std::cmp::Ord;
@@ -33,11 +33,9 @@ use futures::prelude::Stream;
 /// Each connection has a `Worker` task, which handles communication with a `Peer`,
 /// reads and writes to disk, and sends relevant updates to the Controller.
 pub struct Manager {
-    torrents: Arc<Mutex<HashMap<Hash, TorrentRuntime>>>, // u8 is the Info_hash
-    peer_id: Hash,                                       // our peer id
-    npeers: Arc<AtomicUsize>, // TODO: can this just be in the controller?
+    torrent_state: Arc<TorrentState>,
     manager_send: Option<Sender<NewPeerMsg>>, // Must be initialized when Controller is created
-    port: u16,                // Port we're listening on
+    port: u16,                                // Port we're listening on
 }
 
 #[derive(Debug)]
@@ -69,13 +67,23 @@ impl From<ParseError> for NetworkError {
 }
 
 macro_rules! acquire_torrent_lock {
-    ($torrents:ident, $peer:ident, $torrent:ident) => {
-        let mut torrents = $torrents.lock().expect("Torrents mutex poisoned");
+    ($state:ident, $peer:ident, $torrent:ident) => {
+        let mut torrents = $state.torrents.lock().expect("Torrents mutex poisoned");
         let hash = $peer.peer_info.info_hash;
         let mut $torrent = match torrents.get_mut(&hash) {
             Some(v) => Ok(v),
             None => Err(parse_error!("Torrent has been removed ")),
         }?;
+    };
+}
+
+macro_rules! torrents {
+    ($self:ident) => {
+        $self
+            .torrent_state
+            .torrents
+            .lock()
+            .expect("Torrents mutex poisoned");
     };
 }
 
@@ -370,15 +378,48 @@ fn remove(pq: &mut PriorityQueue<Hash, PeerPriority>, id: &Hash) {
     pq.pop();
 }
 
+struct TorrentState {
+    torrents: Mutex<HashMap<Hash, TorrentRuntime>>, // u8 is the Info_hash
+    peer_id: Hash,                                  // our peer id
+    npeers: AtomicUsize,
+}
+
+impl TorrentState {
+    fn new() -> TorrentState {
+        TorrentState {
+            torrents: Mutex::new(HashMap::new()),
+            peer_id: Peer::gen_peer_id(),
+            npeers: AtomicUsize::new(0),
+        }
+    }
+}
+
+struct TrackerArgs {
+    torrent_state: Arc<TorrentState>,
+    port: u16,
+    channel: Sender<NewPeerMsg>,
+    torrent: MetaInfo,
+}
+
+impl TrackerArgs {
+    pub fn query_tracker_on_torrents(&self) {
+        for torrent in torrents!(self).iter() {
+            Manager::query_tracker(self);
+        }
+    }
+}
+
 impl Manager {
     pub fn new() -> Manager {
         Manager {
-            torrents: Arc::new(Mutex::new(HashMap::new())),
-            peer_id: Peer::gen_peer_id(),
-            npeers: Arc::new(AtomicUsize::new(0)),
+            torrent_state: Arc::new(TorrentState::new()),
             manager_send: None,
             port: ::PORT_NUM,
         }
+    }
+
+    pub fn peer_id(&self) -> Hash {
+        self.torrent_state.peer_id
     }
 
     /// Used in a builder pattern to set the listening port
@@ -402,7 +443,10 @@ impl Manager {
         download_path: &str,
     ) -> Result<(), ParseError> {
         match TorrentRuntime::new(metainfo_path, download_path, true) {
-            Ok(torrent) => self._add_torrent(torrent),
+            Ok(torrent) => {
+                let metainfo = self.insert_torrent(torrent);
+                Manager::query_tracker(&self.tracker_args(metainfo))
+            }
             Err(err) => Err(err),
         }
     }
@@ -417,56 +461,70 @@ impl Manager {
         match TorrentRuntime::new(metainfo_path, download_path, false) {
             Ok(torrent) => {
                 torrent.create_files()?;
-                self._add_torrent(torrent)
+                let metainfo = self.insert_torrent(torrent);
+                Manager::query_tracker(&self.tracker_args(metainfo))
             }
             Err(err) => Err(err),
         }
     }
 
-    fn _add_torrent(&mut self, torrent: TorrentRuntime) -> Result<(), ParseError> {
+    fn insert_torrent(&mut self, torrent: TorrentRuntime) -> MetaInfo {
+        let metainfo = torrent.metainfo();
+        {
+            let mut torrents = torrents!(self);
+            let info_hash = torrent.info_hash();
+            torrents.insert(info_hash, torrent);
+        }
+        info!(
+            "Added torrent {}. Info hash: {}",
+            metainfo.name(),
+            metainfo.info_hash()
+        );
+        metainfo
+    }
+
+    fn tracker_args(&self, torrent: MetaInfo) -> TrackerArgs {
+        let torrent_state = self.torrent_state.clone();
+        let port = self.port;
+        let channel = self.manager_send
+            .clone()
+            .expect("Handle not called on manager");
+        TrackerArgs {
+            torrent_state: torrent_state,
+            port: port,
+            channel: channel,
+            torrent: torrent,
+        }
+    }
+
+    fn query_tracker(args: &TrackerArgs) -> Result<(), ParseError> {
         let mut core = Core::new()?;
-        let info_hash = torrent.info_hash();
+
+        let info_hash = args.torrent.info_hash();
         let stream = Tracker::get_peers(
             core.handle(),
             info_hash,
-            self.peer_id,
-            torrent.trackers(),
-            self.port.clone(),
+            args.torrent_state.peer_id,
+            args.torrent.trackers(),
+            args.port,
         )?;
-
-        {
-            let mut torrents = self.torrents.lock().expect("Torrents mutex poisoned");
-
-            torrents.insert(info_hash, torrent);
-        }
-
-        let torrents = self.torrents.clone();
-        let npeers = self.npeers.clone();
-        let channel = self.manager_send
-            .clone()
-            .expect("Handle not called before adding torrent");
-        let peer_id = self.peer_id;
-        let port = self.port;
 
         core.run(stream.for_each(|ips| {
             info!("Tracker response received with {} ips", ips.len());
             for ip in ips {
                 debug!("Received IP address from tracker: {}", ip);
-                if ip.port() == port {
-                    warn!("Avoiding connection with self: {}", port);
+                if ip.port() == args.port {
+                    warn!("Avoiding connection with self: {}", args.port);
                     continue;
                 }
-                let channel = channel.clone();
-                let torrents = torrents.clone();
-                let npeers = npeers.clone();
+                let channel = args.channel.clone();
 
-                Manager::connect(
+                ConnectionHandler::connect(
                     TcpStream::connect(ip),
-                    torrents,
-                    npeers,
+                    args.torrent_state.clone(),
                     channel,
                     Handshake::Initiator {
-                        peer_id: peer_id.clone(),
+                        peer_id: args.torrent_state.peer_id,
                         info_hash: info_hash,
                     },
                 );
@@ -478,10 +536,78 @@ impl Manager {
         })
     }
 
+    /* TODO: query tracker on interval
+    fn repeat_query_tracker(&self) {
+        let tracker_args = self.tracker_args();
+        thread::spawn(move || {
+            let mut wheel = Timers::new(Duration::new(10, 0), tracker_args);
+            add_timers!(wheel, TrackerArgs, (10, query_tracker_on_torrents));
+            wheel.run_loop();
+        });
+    }*/
+
+    /// Entry point. Only meant to be called once.
+    /// Returns channel for receiving progress updates.
+    pub fn handle(&mut self) -> BidirectionalChannel<ClientMsg, InfoMsg> {
+        let (manager_send, manager_recv) = mpsc::channel();
+        self.manager_send = Some(manager_send.clone());
+
+        let torrent_state_1 = self.torrent_state.clone();
+        let port = self.port.clone();
+
+        thread::spawn(move || {
+            // listens for incoming connections
+            let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
+                .expect(&format!("Failed to bind listening port: {}", port));
+            info!(
+                "Listening on port {} for new peers as peer {}",
+                port, torrent_state_1.peer_id
+            );
+            listener.incoming().for_each(|stream| {
+                ConnectionHandler::connect(
+                    stream,
+                    torrent_state_1.clone(),
+                    manager_send.clone(),
+                    Handshake::Receiver(torrent_state_1.peer_id.clone()),
+                );
+            });
+        });
+
+        //self.repeat_query_tracker();
+
+        let torrent_state_2 = self.torrent_state.clone();
+        let (info_send, info_recv) = BidirectionalChannel::create();
+        thread::spawn(move || {
+            info!("Starting server");
+            Controller::new(manager_recv, torrent_state_2, info_send).run_loop();
+        });
+
+        return info_recv;
+    }
+}
+
+struct ConnectionHandler {
+    torrent_state: Arc<TorrentState>,
+}
+
+impl ConnectionHandler {
+    /// Entry point
+    pub fn connect(
+        stream: Result<TcpStream, IOError>,
+        torrent_state: Arc<TorrentState>,
+        manager_send: Sender<NewPeerMsg>,
+        handshake: Handshake,
+    ) {
+        let handler = ConnectionHandler {
+            torrent_state: torrent_state,
+        };
+        handler.do_connect(stream, manager_send, handshake);
+    }
+
     /// Handle incoming clients
     fn handle_client(
+        &self,
         stream: &mut TcpStream,
-        torrents: &Arc<Mutex<HashMap<Hash, TorrentRuntime>>>,
         handshake: Handshake,
     ) -> Result<Peer, ParseError> {
         if let Handshake::Initiator { peer_id, info_hash } = handshake {
@@ -507,7 +633,7 @@ impl Manager {
                         }
                     }
                     Handshake::Receiver(peer_id) => {
-                        Manager::match_torrent(&their_info_hash, torrents)?;
+                        self.match_torrent(&their_info_hash)?;
                         stream.write(&Peer::handshake(&peer_id, &their_info_hash));
                     }
                 }
@@ -524,7 +650,7 @@ impl Manager {
                         .expect("Expected connection to have port")
                         .port() as i64,
                 };
-                let torrents = torrents.lock().expect("Torrents mutex poisoned");
+                let torrents = torrents!(self);
                 let torrent = torrents.get(&info.info_hash).unwrap();
                 let peer = Peer::new(info, torrent.npieces());
                 Ok(peer)
@@ -532,12 +658,9 @@ impl Manager {
         }
     }
 
-    fn match_torrent(
-        info_hash: &Hash,
-        torrents: &Arc<Mutex<HashMap<Hash, TorrentRuntime>>>,
-    ) -> Result<bool, ParseError> {
+    fn match_torrent(&self, info_hash: &Hash) -> Result<bool, ParseError> {
         // Find the matching torrent
-        let torrents = torrents.lock().expect("Torrents mutex poisoned");
+        let torrents = torrents!(self);
         if torrents.contains_key(info_hash) {
             return Ok(true);
         }
@@ -560,7 +683,7 @@ impl Manager {
     fn receive(
         mut peer: Peer,
         mut stream: TcpStream,
-        torrents: Arc<Mutex<HashMap<Hash, TorrentRuntime>>>,
+        torrent_state: Arc<TorrentState>,
         comm: BidirectionalChannel<PeerUpdate, ManagerUpdate>,
     ) -> Result<(), ParseError> {
         let mut buf = [0; ::MSG_SIZE];
@@ -576,7 +699,7 @@ impl Manager {
 
         // Begin by sending our bitfield
         {
-            acquire_torrent_lock!(torrents, peer, torrent);
+            acquire_torrent_lock!(torrent_state, peer, torrent);
             if let Err(e) = stream.write(&Peer::bitfield(&torrent.bitfield())) {
                 error!("Error sending initial bitfield to peer {}", peer.peer_id());
             }
@@ -591,7 +714,7 @@ impl Manager {
                             /*
                             // for each field in bitfield, update_priority by -1
                             if peer.peer_choking {
-                                acquire_torrent_lock!(torrents, peer, torrent);
+                                acquire_torrent_lock!(torrent_state, peer, torrent);
                                 Manager::update_priority_all(&peer, &mut torrent, -1);
                             }
 
@@ -613,7 +736,7 @@ impl Manager {
                         }
                         Action::Request(requests) => {
                             info!("Fullfilling request for peer {}", peer.peer_id());
-                            acquire_torrent_lock!(torrents, peer, torrent);
+                            acquire_torrent_lock!(torrent_state, peer, torrent);
                             for req in requests {
                                 match torrent.read_block(&req) {
                                     Ok(ref pd) => {
@@ -641,7 +764,7 @@ impl Manager {
                                 piece.piece
                             );
                             download_size = download_size + piece.piece.length;
-                            acquire_torrent_lock!(torrents, peer, torrent);
+                            acquire_torrent_lock!(torrent_state, peer, torrent);
                             match torrent.write_block(&piece) {
                                 Ok(()) => {
                                     comm.send(PeerUpdate::Downloaded(piece.piece.index));
@@ -663,17 +786,17 @@ impl Manager {
                                 peer.peer_id(),
                                 peer.peer_choking
                             );
-                            acquire_torrent_lock!(torrents, peer, torrent);
+                            acquire_torrent_lock!(torrent_state, peer, torrent);
                             if peer.peer_choking {
-                                Manager::update_priority_all(&peer, &mut torrent, -1);
+                                ConnectionHandler::update_priority_all(&peer, &mut torrent, -1);
                             } else {
-                                Manager::update_priority_all(&peer, &mut torrent, 1);
+                                ConnectionHandler::update_priority_all(&peer, &mut torrent, 1);
                             }
                             comm.send(PeerUpdate::ChokingChange);
                         }
                         Action::Have(index) => {
                             if peer.peer_choking {
-                                acquire_torrent_lock!(torrents, peer, torrent);
+                                acquire_torrent_lock!(torrent_state, peer, torrent);
                                 torrent.update_priority(index as usize, 1);
                             }
                             comm.send(PeerUpdate::Have(index));
@@ -681,8 +804,8 @@ impl Manager {
                         Action::Bitfield(bitfield) => {
                             info!("Received bitfield from {}", peer.peer_id());
                             if !peer.peer_choking {
-                                acquire_torrent_lock!(torrents, peer, torrent);
-                                Manager::update_priority_all(&peer, &mut torrent, 1);
+                                acquire_torrent_lock!(torrent_state, peer, torrent);
+                                ConnectionHandler::update_priority_all(&peer, &mut torrent, 1);
                             }
                             comm.send(PeerUpdate::Bitfield(bitfield));
                         }
@@ -732,11 +855,13 @@ impl Manager {
     }
 
     fn register_peer(
+        &self,
         peer: &Peer,
-        npeers: Arc<AtomicUsize>,
         manager_send: &Sender<NewPeerMsg>,
     ) -> BidirectionalChannel<PeerUpdate, ManagerUpdate> {
-        npeers.fetch_add(1, AtomicOrdering::SeqCst);
+        self.torrent_state
+            .npeers
+            .fetch_add(1, AtomicOrdering::SeqCst);
         let (manager_comm, peer_comm) = BidirectionalChannel::create();
 
         manager_send
@@ -753,30 +878,34 @@ impl Manager {
         return peer_comm;
     }
 
-    fn connect(
+    fn do_connect(
+        &self,
         stream: Result<TcpStream, IOError>,
-        torrents: Arc<Mutex<HashMap<Hash, TorrentRuntime>>>,
-        npeers: Arc<AtomicUsize>,
         manager_send: Sender<NewPeerMsg>,
         handshake: Handshake,
     ) {
         match stream {
             Ok(mut stream) => {
-                if npeers.load(AtomicOrdering::SeqCst) > ::MAX_PEERS {
+                if self.torrent_state.npeers.load(AtomicOrdering::SeqCst) > ::MAX_PEERS {
                     stream.shutdown(Shutdown::Both);
                     warn!(
                         "Max numbers of peers {} reached; rejecting new connection",
                         ::MAX_PEERS
                     );
                 } else {
-                    match Manager::handle_client(&mut stream, &torrents, handshake) {
+                    match self.handle_client(&mut stream, handshake) {
                         Ok(peer) => {
                             info!("New peer connected: {}", peer.peer_id());
-                            let peer_comm = Manager::register_peer(&peer, npeers, &manager_send);
+                            let peer_comm = self.register_peer(&peer, &manager_send);
+                            let torrent_state = self.torrent_state.clone();
                             thread::spawn(move || {
                                 // manages new connection
-                                if let Err(e) = Manager::receive(peer, stream, torrents, peer_comm)
-                                {
+                                if let Err(e) = ConnectionHandler::receive(
+                                    peer,
+                                    stream,
+                                    torrent_state,
+                                    peer_comm,
+                                ) {
                                     warn!("Peer shut down with error: {}", e);
                                 }
                             });
@@ -793,62 +922,16 @@ impl Manager {
             }
         }
     }
-
-    /// Entry point. Only meant to be called once.
-    /// Returns channel for receiving progress updates.
-    pub fn handle(&mut self) -> BidirectionalChannel<ClientMsg, InfoMsg> {
-        let torrents = self.torrents.clone();
-
-        let (manager_send, manager_recv) = mpsc::channel();
-        self.manager_send = Some(manager_send.clone());
-
-        let npeers = self.npeers.clone();
-        let peer_id = self.peer_id.clone();
-        let port = self.port.clone();
-
-        thread::spawn(move || {
-            // listens for incoming connections
-            let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
-                .expect(&format!("Failed to bind listening port: {}", port));
-            info!(
-                "Listening on port {} for new peers as peer {}",
-                port, peer_id
-            );
-            listener.incoming().for_each(|stream| {
-                let torrents = torrents.clone();
-                Manager::connect(
-                    stream,
-                    torrents,
-                    npeers.clone(),
-                    manager_send.clone(),
-                    Handshake::Receiver(peer_id),
-                );
-            });
-        });
-
-        let torrents = self.torrents.clone();
-        let npeers = self.npeers.clone();
-        let (info_send, info_recv) = BidirectionalChannel::create();
-        thread::spawn(move || {
-            info!("Starting server");
-            Controller::new(manager_recv, torrents, npeers, info_send).run_loop();
-        });
-
-        return info_recv;
-    }
-}
-
-macro_rules! torrents {
-    ($self:ident) => {
-        $self.torrents.lock().expect("Torrents mutex poisoned");
-    };
 }
 
 /// Removes the peer specified by `peer_id`.
 /// This is a macro to avoid annoying the borrow checker.
 macro_rules! remove_peer {
     ($self:ident, $peer_id:ident) => {
-        $self.npeers.fetch_sub(1, AtomicOrdering::SeqCst);
+        $self
+            .torrent_state
+            .npeers
+            .fetch_sub(1, AtomicOrdering::SeqCst);
         remove(&mut $self.peer_priority, $peer_id);
         $self.bitfields.remove($peer_id);
         $self.peers.remove($peer_id);
@@ -881,8 +964,7 @@ macro_rules! add_terminating_timers {
 
 struct Controller {
     recv: mpsc::Receiver<NewPeerMsg>,
-    torrents: Arc<Mutex<HashMap<Hash, TorrentRuntime>>>,
-    npeers: Arc<AtomicUsize>,
+    torrent_state: Arc<TorrentState>,
     client_comm: BidirectionalChannel<InfoMsg, ClientMsg>,
     peer_priority: PriorityQueue<Hash, PeerPriority>,
     peers: HashMap<Hash, BidirectionalChannel<ManagerUpdate, PeerUpdate>>,
@@ -892,14 +974,12 @@ struct Controller {
 impl Controller {
     pub fn new(
         recv: mpsc::Receiver<NewPeerMsg>,
-        torrents: Arc<Mutex<HashMap<Hash, TorrentRuntime>>>,
-        npeers: Arc<AtomicUsize>,
+        state: Arc<TorrentState>,
         client_comm: BidirectionalChannel<InfoMsg, ClientMsg>,
     ) -> Controller {
         Controller {
             recv: recv,
-            torrents: torrents,
-            npeers: npeers,
+            torrent_state: state,
             client_comm: client_comm,
             peer_priority: PriorityQueue::new(),
             peers: HashMap::new(),
@@ -1193,7 +1273,7 @@ impl Controller {
             progress: torrent.downloaded() as f32 / torrent.size() as f32,
             up: torrent.upload_rate(),
             down: torrent.download_rate(),
-            npeers: self.npeers.load(AtomicOrdering::SeqCst),
+            npeers: self.torrent_state.npeers.load(AtomicOrdering::SeqCst),
         }
     }
 }
@@ -1211,34 +1291,35 @@ mod tests {
     /// Allows access to all these variables in repeated setup
     macro_rules! controller_setup {
         (
-            $controller:ident, $manager_send:ident, $npeers:ident, $info_hash:ident, $npieces:ident
+            $controller:ident,
+            $manager_send:ident,
+            $torrent_state:ident,
+            $info_hash:ident,
+            $npieces:ident
         ) => {
             controller_setup!(
                 $controller,
                 $manager_send,
-                $npeers,
+                $torrent_state,
                 $info_hash,
                 $npieces,
-                client,
-                torrents
+                client
             );
         };
         (
             $controller:ident,
             $manager_send:ident,
-            $npeers:ident,
+            $torrent_state:ident,
             $info_hash:ident,
             $npieces:ident,
-            $client:ident,
-            $torrents:ident
+            $client:ident
         ) => {
             let ($manager_send, manager_recv) = mpsc::channel();
-            let $torrents = Arc::new(Mutex::new(HashMap::new()));
-            let $npeers = Arc::new(AtomicUsize::new(0));
+            let $torrent_state = Arc::new(TorrentState::new());
             let (info_send, $client) = BidirectionalChannel::create();
 
             let mut $controller =
-                Controller::new(manager_recv, $torrents.clone(), $npeers.clone(), info_send);
+                Controller::new(manager_recv, $torrent_state.clone(), info_send);
 
             // Add torrent
             let torrent = TorrentRuntime::new(::TEST_FILE, ::DL_DIR, false).unwrap();
@@ -1247,15 +1328,15 @@ mod tests {
             let $info_hash = torrent.info_hash().clone();
             let npieces = torrent.npieces();
             {
-                let mut ts = $torrents.lock().unwrap();
-                ts.insert(torrent.info_hash(), torrent);
+                let mut torrents = $torrent_state.torrents.lock().unwrap();
+                torrents.insert(torrent.info_hash(), torrent);
             }
         };
     }
 
     macro_rules! get_torrent {
-        ($torrents:ident, $info_hash:expr, $torrent:ident) => {
-            let mut ts = $torrents.lock().unwrap();
+        ($torrent_state:ident, $info_hash:expr, $torrent:ident) => {
+            let mut ts = $torrent_state.torrents.lock().unwrap();
             let mut $torrent = ts.get($info_hash).unwrap();
         };
     }
@@ -1296,89 +1377,102 @@ mod tests {
         controller_setup!(
             controller,
             manager_send,
-            npeers,
+            torrent_state,
             info_hash,
             npieces,
-            client,
-            torrents
+            client
         );
         // Send pause; make sure torrent is paused
         client.send(ClientMsg::Pause(info_hash));
         controller.recv_client();
         {
-            get_torrent!(torrents, &info_hash, torrent);
+            get_torrent!(torrent_state, &info_hash, torrent);
             assert_eq!(torrent.status(), Status::Paused);
         }
         // Send resume; make sure it's resumed
         client.send(ClientMsg::Resume(info_hash));
         controller.recv_client();
         {
-            get_torrent!(torrents, &info_hash, torrent);
+            get_torrent!(torrent_state, &info_hash, torrent);
             assert_eq!(torrent.status(), Status::Running);
         }
         // Send resume again; still resumed
         client.send(ClientMsg::Resume(info_hash));
         controller.recv_client();
         {
-            get_torrent!(torrents, &info_hash, torrent);
+            get_torrent!(torrent_state, &info_hash, torrent);
             assert_eq!(torrent.status(), Status::Running);
         }
         // Remove it
         client.send(ClientMsg::Remove(info_hash));
         controller.recv_client();
         {
-            let mut ts = torrents.lock().unwrap();
+            let mut ts = torrent_state.torrents.lock().unwrap();
             assert_eq!(ts.get(&info_hash), None);
         }
     }
 
-    #[test]
-    fn test_send_receive() {
-        let _ = env_logger::init();
-        let seeder_ports: Vec<u16> = (1700..1701).collect();
-        let leecher_ports: Vec<u16> = (1751..1751 + ::MAX_PEERS as u16 + 1).collect();
+    /// Template for integration tests involving some number of seeders (starting completed)
+    /// and leechers (starting empty).
+    /// This is a macro becuase the function based to default_tracker must be static
+    macro_rules! test_send_receive {
+        ($n_seeders:expr, $n_leechers:expr) => {
+            let _ = env_logger::init();
+            let seeder_ports: Vec<u16> = (1700..1700 + $n_seeders as u16).collect();
+            let leecher_ports: Vec<u16> = (1751..1751 + $n_leechers as u16).collect();
 
-        thread::spawn(move || {
-            fn tmp() -> TrackerResponse {
-                let seeder_vec: Vec<usize> = (1700..1701).collect();
-                default_tracker(&seeder_vec)
-            };
-            tests::run_server("127.0.0.1:3000", &tmp);
-        });
-
-        sleep(Duration::new(0, 1000));
-
-        let seeder_rxs = add_torrents(
-            &seeder_ports,
-            ::TEST_FILE,
-            &format!("{}/{}", ::READ_DIR, "valid_torrent"),
-            true,
-        );
-
-        let mut leecher_rxs = add_torrents(
-            &leecher_ports,
-            ::TEST_FILE,
-            &format!("{}/{}", ::DL_DIR, "test_send_receive"),
-            false,
-        );
-
-        while leecher_rxs.len() > 0 {
-            leecher_rxs.retain(|leecher_rx| match leecher_rx.recv() {
-                InfoMsg::One(info) => match info.status {
-                    Status::Complete => {
-                        leecher_rx.send(ClientMsg::Disconnect).unwrap();
-                        false
-                    }
-                    _ => true,
-                },
-                _ => true,
+            thread::spawn(move || {
+                fn tmp() -> TrackerResponse {
+                    let seeder_vec: Vec<usize> = (1700..1700 + $n_seeders).collect();
+                    default_tracker(&seeder_vec)
+                };
+                tests::run_server("127.0.0.1:3000", &tmp);
             });
-        }
+            // Should be sufficient to let the server start
+            sleep(Duration::new(0, 5000));
 
-        for seeder_rx in seeder_rxs {
-            seeder_rx.send(ClientMsg::Disconnect).unwrap();
-        }
+            let seeder_rxs = add_torrents(
+                &seeder_ports,
+                ::TEST_FILE,
+                &format!("{}/{}", ::READ_DIR, "valid_torrent"),
+                true,
+            );
+
+            let mut leecher_rxs = add_torrents(
+                &leecher_ports,
+                ::TEST_FILE,
+                &format!("{}/{}", ::DL_DIR, "test_send_receive"),
+                false,
+            );
+
+            while leecher_rxs.len() > 0 {
+                leecher_rxs.retain(|leecher_rx| match leecher_rx.recv() {
+                    InfoMsg::One(info) => match info.status {
+                        Status::Complete => {
+                            leecher_rx.send(ClientMsg::Disconnect).unwrap();
+                            false
+                        }
+                        _ => true,
+                    },
+                    _ => true,
+                });
+            }
+
+            for seeder_rx in seeder_rxs {
+                seeder_rx.send(ClientMsg::Disconnect).unwrap();
+            }
+        };
     }
+
+    #[test]
+    fn test_many_leechers() {
+        test_send_receive!(1, ::MAX_PEERS);
+    }
+    /*
+    #[test]
+    fn test_some_seeders_and_leechers() {
+        test_send_receive!(10, 10);
+    }*/
 
     // Create n seeding clients
     // Create n leeching clients
@@ -1400,10 +1494,13 @@ mod tests {
 
     #[test]
     fn test_peer_updates() {
-        controller_setup!(controller, manager_send, npeers, info_hash, npieces);
+        controller_setup!(controller, manager_send, ts, info_hash, npieces);
         // Simulate new peer
         let peer = gen_peer(3001, info_hash);
-        let peer_comm = Manager::register_peer(&peer, npeers.clone(), &manager_send);
+        let handler = ConnectionHandler {
+            torrent_state: ts.clone(),
+        };
+        let peer_comm = handler.register_peer(&peer, &manager_send);
 
         controller.try_recv_new_peer();
         assert_eq!(controller.peer_priority.len(), 1);
@@ -1441,17 +1538,18 @@ mod tests {
         assert_eq!(controller.peers.len(), 0);
     }
 
-    fn test_worker() {}
-
     #[test]
     fn test_make_requests() {
         // Setup
-        controller_setup!(controller, manager_send, npeers, info_hash, npieces);
+        controller_setup!(controller, manager_send, ts, info_hash, npieces);
+        let handler = ConnectionHandler {
+            torrent_state: ts.clone(),
+        };
         // Connect some peers (mock)
         let peer = gen_peer(3002, info_hash);
-        let peer_comm = Manager::register_peer(&peer, npeers.clone(), &manager_send);
+        let peer_comm = handler.register_peer(&peer, &manager_send);
         let peer_2 = gen_peer(3003, info_hash);
-        let peer_comm_2 = Manager::register_peer(&peer_2, npeers.clone(), &manager_send);
+        let peer_comm_2 = handler.register_peer(&peer_2, &manager_send);
         controller.try_recv_new_peer();
 
         // Some of those peers stop choking
@@ -1463,8 +1561,8 @@ mod tests {
 
         // Run make_requests()
         {
-            let mut ts = controller.torrents.lock().unwrap();
-            let mut torrent = ts.get_mut(&info_hash).unwrap();
+            let mut torrents = controller.torrent_state.torrents.lock().unwrap();
+            let mut torrent = torrents.get_mut(&info_hash).unwrap();
             torrent.update_priority(0, 1);
         }
         controller.make_requests();

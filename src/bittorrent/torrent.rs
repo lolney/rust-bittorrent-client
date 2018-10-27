@@ -113,12 +113,17 @@ impl Torrent {
         return Ok(());
     }
 
+    /// Clone the metainfo
+    pub fn metainfo(&self) -> MetaInfo {
+        self.metainfo.clone()
+    }
+
     pub fn trackers(&self) -> Vec<String> {
         self.metainfo.trackers()
     }
 
     pub fn name(&self) -> &String {
-        self.metainfo.info().file_info.name()
+        self.metainfo.name()
     }
 
     pub fn piece_length(&self) -> i64 {

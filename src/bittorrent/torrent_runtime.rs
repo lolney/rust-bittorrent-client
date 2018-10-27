@@ -1,5 +1,6 @@
 use bit_vec::BitVec;
-use bittorrent::{manager::Status, torrent::Torrent, Hash, ParseError, Piece, PieceData};
+use bittorrent::{manager::Status, metainfo::MetaInfo, torrent::Torrent, Hash, ParseError, Piece,
+                 PieceData};
 use priority_queue::PriorityQueue;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -167,6 +168,11 @@ impl TorrentRuntime {
                 Status::Running
             },
         })
+    }
+
+    #[inline]
+    pub fn metainfo(&self) -> MetaInfo {
+        self.torrent.metainfo()
     }
 
     #[inline]

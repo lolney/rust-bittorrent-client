@@ -338,6 +338,10 @@ impl MetaInfo {
         hash(&bstring)
     }
 
+    pub fn name(&self) -> &String {
+        self.info().file_info.name()
+    }
+
     pub fn info(&self) -> &Info {
         &self.info
     }

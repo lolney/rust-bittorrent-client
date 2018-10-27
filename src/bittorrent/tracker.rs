@@ -348,10 +348,14 @@ impl Tracker {
         Ok(vec)
     }
 
-    pub fn announce() {}
+    pub fn announce() {
+        unimplemented!();
+    }
 
     /// Queries the state of a given torrent
-    pub fn scrape() {}
+    pub fn scrape() {
+        unimplemented!();
+    }
 }
 
 #[cfg(test)]
