@@ -7,7 +7,6 @@
 #![feature(try_trait)]
 #![feature(proc_macro, conservative_impl_trait, generators)]
 #![allow(dead_code)]
-#![feature(collections)]
 
 extern crate bit_vec;
 extern crate byteorder;
@@ -19,7 +18,7 @@ extern crate priority_queue;
 extern crate rand;
 extern crate sha1;
 
-extern crate futures_await as futures;
+extern crate futures;
 extern crate hyper;
 extern crate tokio_core;
 extern crate tokio_timer;

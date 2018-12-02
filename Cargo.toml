@@ -1,32 +1,31 @@
 [package]
 name = "rust-bittorrent-client"
 version = "0.1.0"
-authors = ["Luke Olney <LukeOlney2016@u.northwestern.edu>"]
+authors = ["Luke Olney <lukeolney@gmail.com>"]
 
 [dependencies]
 byteorder = "1.1.0"
-priority-queue = "0.4.5"
+priority-queue = "0.5.2"
 bit-vec = "0.4.4"
 log = "0.4"
 env_logger = "*"
 sha1 = "0.2.0"
 rand = "0.4"
-futures = "0.1.18"
+futures = "0.1.25"
 tokio-core = "0.1.5"
 tokio-timer = "0.2.3"
 hyper = "0.11.22"
 url = "1.7.0"   
 cursive = { version = "0.7", default-features = false }
 cursive_table_view = "0.4.2"
-futures-await = "0.1"
-serde = "1.0.3"
-serde_derive = "1.0"
+serde = "1.0.80"
+serde_derive = "1.0.80"
 hex = "0.2.0"
 
-rocket = "0.3.8"
-rocket_codegen = "0.3.8"
-rocket_contrib = "0.3.8"
-rocket_cors = { git = "https://github.com/lawliet89/rocket_cors", branch = "master" }
+rocket = "0.4.0-rc.2"
+rocket_codegen = "0.4.0-rc.2"
+rocket_contrib = "0.4.0-rc.2"
+rocket_cors = "0.4.0-rc.2"
 
 [lib]
 name = "bittorrent"

@@ -197,8 +197,8 @@ mod tests {
 
     use torrent_state::*;
 
-    use bittorrent::bittorrent::manager::{BidirectionalChannel, ClientMsg, InfoMsg};
-    use bittorrent::bittorrent::manager::{Info, Manager, Status};
+    use bittorrent::bittorrent::manager::InfoMsg;
+    use bittorrent::bittorrent::manager::{Info, Status};
 
     fn gen_info() -> Info {
         Info {

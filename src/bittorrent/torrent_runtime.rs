@@ -58,9 +58,11 @@ impl PieceQueue {
             if priority != MIN_PRIORITY {
                 self.queue.pop()
             } else {
+                info!("Element in queue, but min priority");
                 None
             }
         } else {
+            info!("No elements in queue");
             None
         }
     }
@@ -82,6 +84,7 @@ impl PieceQueue {
             if new_priority > 0 {
                 panic!("Priority can't be above 0");
             } else if new_priority < 0 {
+                info!("Setting priority from zero: {}", new_priority);
                 self.zeros.remove(index);
                 self.queue.change_priority(index, new_priority);
             }
@@ -89,13 +92,16 @@ impl PieceQueue {
         } else if let Some(priority) = self.get_priority(index) {
             let new_priority = f(priority);
             if new_priority == 0 {
+                info!("Setting priority to zero");
                 self.zeros.insert(*index);
                 self.queue.change_priority(index, MIN_PRIORITY);
             } else {
+                info!("Setting priority to {}", new_priority);
                 self.queue.change_priority(index, new_priority);
             }
             Some(new_priority)
         } else {
+            info!("Not in either queue or zeros: {}", index);
             None
         }
     }
@@ -271,8 +277,10 @@ impl TorrentRuntime {
         if front.is_some() {
             let front = front.unwrap();
             if front.time.elapsed() >= timeout {
+                info!("taking an expired request");
                 return Some(front.piece);
             } else {
+                info!("request hasn't expired yet");
                 self.outstanding_requests.push_front(front)
             }
         }
@@ -286,7 +294,10 @@ impl TorrentRuntime {
                 });
                 Some(piece)
             }
-            None => None,
+            None => {
+                info!("no requests in queue");
+                None
+            }
         }
     }
 

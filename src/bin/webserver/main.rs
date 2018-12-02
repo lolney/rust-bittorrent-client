@@ -1,22 +1,19 @@
 #![feature(plugin, custom_derive)]
-#![plugin(rocket_codegen)]
-
-use bittorrent::bittorrent::manager::{Info, Status};
-use bittorrent::bittorrent::Hash;
+#![feature(proc_macro_hygiene, decl_macro)]
 
 use rocket::http::Method;
-use rocket::response::content::Json as JsonValue;
 use rocket::{Rocket, State};
-use rocket_contrib::Json;
 use rocket_cors::{AllowedHeaders, AllowedOrigins};
 use torrent_state::{BackedTorrentState, TorrentState};
 
 use std::sync::{Arc, Mutex};
 
 extern crate bittorrent;
+#[macro_use]
 extern crate rocket;
 #[macro_use]
 extern crate rocket_contrib;
+extern crate rocket_codegen;
 extern crate rocket_cors;
 extern crate serde;
 
@@ -39,45 +36,39 @@ macro_rules! get_mutex {
 }
 
 #[get("/torrents")]
-fn torrents(mutex: WrappedState) -> CustomResult<Vec<Info>> {
+fn torrents(mutex: WrappedState) -> CustomResult {
     let mut state = get_mutex!(mutex);
-    CustomResult::from(state.torrents().map(|data| Json(data)))
+    CustomResult::from(state.torrents().map(|data| json!(data)))
 }
 
 #[get("/torrents/<info_hash>")]
-fn torrent(info_hash: String, mutex: WrappedState) -> CustomResult<Info> {
+fn torrent(info_hash: String, mutex: WrappedState) -> CustomResult {
     let mut state = get_mutex!(mutex);
-    CustomResult::from(state.torrent(info_hash).map(|data| Json(data.clone())))
+    CustomResult::from(state.torrent(info_hash).map(|data| json!(data.clone())))
 }
 
 #[post("/torrents/<info_hash>/pause")]
-fn pause(info_hash: String, mutex: WrappedState) -> CustomResult<()> {
+fn pause(info_hash: String, mutex: WrappedState) -> CustomResult {
     let mut state = get_mutex!(mutex);
     CustomResult::from(state.pause(info_hash))
 }
 
 #[post("/torrents/<info_hash>/resume")]
-fn resume(info_hash: String, mutex: WrappedState) -> CustomResult<()> {
+fn resume(info_hash: String, mutex: WrappedState) -> CustomResult {
     let mut state = get_mutex!(mutex);
     CustomResult::from(state.resume(info_hash))
 }
 
 #[delete("/torrents/<info_hash>")]
-fn remove(info_hash: String, mutex: WrappedState) -> CustomResult<()> {
+fn remove(info_hash: String, mutex: WrappedState) -> CustomResult {
     let mut state = get_mutex!(mutex);
     CustomResult::from(state.remove(info_hash))
 }
 
-#[put("/torrents?<params>")]
-fn add(params: AddParams, mutex: WrappedState) -> CustomResult<()> {
+#[put("/torrents?<metainfo_path>&<download_path>")]
+fn add(metainfo_path: String, download_path: String, mutex: WrappedState) -> CustomResult {
     let mut state = get_mutex!(mutex);
-    CustomResult::from(state.add(params.metainfo_path, params.download_path))
-}
-
-#[derive(FromForm)]
-struct AddParams {
-    metainfo_path: String,
-    download_path: String,
+    CustomResult::from(state.add(metainfo_path, download_path))
 }
 
 fn rocket() -> Rocket {
@@ -113,8 +104,6 @@ mod test {
     use bittorrent::{DL_DIR, TEST_FILE};
     use rocket::http::Status;
     use rocket::local::{Client, LocalResponse as Response};
-
-    use rocket::http::ContentType;
 
     macro_rules! run_test {
         ($route:expr, $method:ident, $test_fn:expr) => {
