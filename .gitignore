@@ -15,3 +15,9 @@ test/bible-out\.torrent
 *.fmt
 
 test/test_write/
+
+traces/
+
+perf\.data\.old
+
+perf\.data

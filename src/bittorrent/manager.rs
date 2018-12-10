@@ -2,9 +2,10 @@ extern crate core;
 
 use bit_vec::BitVec;
 
-use bittorrent::{metainfo::MetaInfo, peer::Action, peer::Peer, peer::PeerInfo, timers::Timers,
-                 torrent, torrent_runtime::TorrentRuntime, tracker::Tracker, Hash, ParseError,
-                 Piece};
+use bittorrent::{
+    metainfo::MetaInfo, peer::Action, peer::Peer, peer::PeerInfo, timers::Timers, torrent,
+    torrent_runtime::TorrentRuntime, tracker::Tracker, Hash, ParseError, Piece,
+};
 use log::error;
 use priority_queue::PriorityQueue;
 use std::cmp::Ord;
@@ -486,7 +487,8 @@ impl Manager {
     fn tracker_args(&self, torrent: MetaInfo) -> TrackerArgs {
         let torrent_state = self.torrent_state.clone();
         let port = self.port;
-        let channel = self.manager_send
+        let channel = self
+            .manager_send
             .clone()
             .expect("Handle not called on manager");
         TrackerArgs {
@@ -530,7 +532,8 @@ impl Manager {
                 );
             }
             Ok(())
-        })).map_err(|e| {
+        }))
+        .map_err(|e| {
             error!("Error while announcing to tracker: {:?}", e);
             e
         })
@@ -706,6 +709,10 @@ impl ConnectionHandler {
         }
 
         loop {
+            // TODO: does tokio have a better abstraction for this?
+            // https://www.reddit.com/r/rust/comments/657wfa/moving_to_tcpstream_bye_tokio_adventures_in_rust/
+            thread::sleep(Duration::from_micros(20000));
+
             // match incoming messages from the peer
             match stream.read(&mut buf) {
                 Err(e) => {
@@ -1085,7 +1092,8 @@ impl Controller {
         let max_uploaders = 5; // TODO: config
         let mut i = 0;
         for (id, _priority) in self.peer_priority.clone().into_sorted_iter() {
-            let comm = self.peers
+            let comm = self
+                .peers
                 .get(&id)
                 .expect("Peer in priority queue but not comms map");
             if i < max_uploaders {
@@ -1104,7 +1112,8 @@ impl Controller {
             .filter(|t| t.1.status() == Status::Running)
         {
             // Select eligible peers
-            let peers_iter: Vec<Hash> = self.peer_priority
+            let peers_iter: Vec<Hash> = self
+                .peer_priority
                 .iter()
                 .filter(|&(k, v)| !v.peer_choking && v.info_hash == *info_hash)
                 .map(|(k, v)| k.clone())
@@ -1114,14 +1123,16 @@ impl Controller {
                 match torrent.select_piece() {
                     Some(piece) => {
                         for id in peers_iter.iter() {
-                            if self.bitfields
+                            if self
+                                .bitfields
                                 .get(id)
                                 .expect("Peer in priority queue but not bitfields")
                                 .get(piece.index as usize)
                                 .expect("Torrent bitfield and controller bitfields don't match")
                             {
                                 // Request piece
-                                let comm = self.peers
+                                let comm = self
+                                    .peers
                                     .get(id)
                                     .expect("Peer in priority queue but not comms map");
                                 comm.send(ManagerUpdate::Request(Peer::request(&piece)))
@@ -1318,8 +1329,7 @@ mod tests {
             let $torrent_state = Arc::new(TorrentState::new());
             let (info_send, $client) = BidirectionalChannel::create();
 
-            let mut $controller =
-                Controller::new(manager_recv, $torrent_state.clone(), info_send);
+            let mut $controller = Controller::new(manager_recv, $torrent_state.clone(), info_send);
 
             // Add torrent
             let torrent = TorrentRuntime::new(::TEST_FILE, ::DL_DIR, false).unwrap();
@@ -1415,6 +1425,7 @@ mod tests {
     /// Template for integration tests involving some number of seeders (starting completed)
     /// and leechers (starting empty).
     /// This is a macro becuase the function based to default_tracker must be static
+    /// TODO: can't run tests in parallel while they depend on the same tracker address
     macro_rules! test_send_receive {
         ($n_seeders:expr, $n_leechers:expr) => {
             let _ = env_logger::init();
@@ -1468,11 +1479,11 @@ mod tests {
     fn test_many_leechers() {
         test_send_receive!(1, ::MAX_PEERS);
     }
-    /*
+
     #[test]
     fn test_some_seeders_and_leechers() {
         test_send_receive!(10, 10);
-    }*/
+    }
 
     // Create n seeding clients
     // Create n leeching clients
