@@ -709,28 +709,20 @@ impl ConnectionHandler {
         }
 
         loop {
-            // TODO: does tokio have a better abstraction for this?
-            // https://www.reddit.com/r/rust/comments/657wfa/moving_to_tcpstream_bye_tokio_adventures_in_rust/
+            // Alternatives:
+            // Use mio for cross-platform epoll-like scheduling
+            //      - Least change from the current model, but not ideal
+            // Use tokio for task management:
+            // tokio::spawn(reader.for_each(|frame| {process(frame)}));
+            //      - Can also move channels to futures::sync::mpsc::channel
             thread::sleep(Duration::from_micros(20000));
 
             // match incoming messages from the peer
             match stream.read(&mut buf) {
-                Err(e) => {
-                    match e.kind() {
-                        ErrorKind::WouldBlock => {
-                            /*
-                            // for each field in bitfield, update_priority by -1
-                            if peer.peer_choking {
-                                acquire_torrent_lock!(torrent_state, peer, torrent);
-                                Manager::update_priority_all(&peer, &mut torrent, -1);
-                            }
-
-                            comm.send(PeerUpdate::Disconnect);
-                            return;*/
-                        } // timeout
-                        _ => error!("Error while reading from stream: {}", e),
-                    }
-                }
+                Err(e) => match e.kind() {
+                    ErrorKind::WouldBlock => {}
+                    _ => error!("Error while reading from stream: {}", e),
+                },
                 Ok(n) => match peer.parse_message(&buf[0..n]) {
                     Ok(action) => match action {
                         Action::EOF => {
@@ -738,6 +730,11 @@ impl ConnectionHandler {
                                 "Received empty message from {}; disconnecting",
                                 peer.peer_id()
                             );
+                            // for each field in bitfield, update_priority by 1
+                            if peer.peer_choking {
+                                acquire_torrent_lock!(torrent_state, peer, torrent);
+                                ConnectionHandler::update_priority_all(&peer, &mut torrent, -1);
+                            }
                             comm.send(PeerUpdate::Disconnect).unwrap();
                             return Ok(());
                         }
@@ -1347,7 +1344,7 @@ mod tests {
     macro_rules! get_torrent {
         ($torrent_state:ident, $info_hash:expr, $torrent:ident) => {
             let mut ts = $torrent_state.torrents.lock().unwrap();
-            let mut $torrent = ts.get($info_hash).unwrap();
+            let mut $torrent = ts.get_mut($info_hash).unwrap();
         };
     }
 
@@ -1425,9 +1422,13 @@ mod tests {
     /// Template for integration tests involving some number of seeders (starting completed)
     /// and leechers (starting empty).
     /// This is a macro becuase the function based to default_tracker must be static
-    /// TODO: can't run tests in parallel while they depend on the same tracker address
     macro_rules! test_send_receive {
         ($n_seeders:expr, $n_leechers:expr) => {
+            /// TODO: Needed to run in parallel:
+            /// - Have global logger setup
+            /// - Allocate ports globally
+            /// - Create a separate tracker address for each - either set in torrent
+            /// metainfo or create new temp file
             let _ = env_logger::init();
             let seeder_ports: Vec<u16> = (1700..1700 + $n_seeders as u16).collect();
             let leecher_ports: Vec<u16> = (1751..1751 + $n_leechers as u16).collect();
@@ -1547,6 +1548,14 @@ mod tests {
         controller.check_messages();
         assert_eq!(controller.peer_priority.len(), 0);
         assert_eq!(controller.peers.len(), 0);
+
+        // Priority of all pieces should be zero
+        {
+            let mut state = &controller.torrent_state;
+            get_torrent!(state, &info_hash, torrent);
+            let piece = torrent.select_piece();
+            assert!(piece.is_none());
+        }
     }
 
     #[test]
