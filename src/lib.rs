@@ -20,7 +20,8 @@ extern crate sha1;
 
 extern crate futures;
 extern crate hyper;
-extern crate tokio_core;
+extern crate http;
+extern crate tokio;
 extern crate tokio_timer;
 extern crate url;
 

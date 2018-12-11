@@ -24,9 +24,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use std::usize::MAX;
-use tokio_core::reactor::Core;
+use tokio;
 
-use futures::prelude::Stream;
+use futures::{Future, Stream};
 
 /// This module contains the main point of interaction with the library, `Manager`.
 /// Calling `Manager::new().handle()` will spawn the `Controller` thread,
@@ -395,6 +395,7 @@ impl TorrentState {
     }
 }
 
+#[derive(Clone)]
 struct TrackerArgs {
     torrent_state: Arc<TorrentState>,
     port: u16,
@@ -405,7 +406,7 @@ struct TrackerArgs {
 impl TrackerArgs {
     pub fn query_tracker_on_torrents(&self) {
         for torrent in torrents!(self).iter() {
-            Manager::query_tracker(self);
+            Manager::query_tracker(self.clone());
         }
     }
 }
@@ -446,7 +447,7 @@ impl Manager {
         match TorrentRuntime::new(metainfo_path, download_path, true) {
             Ok(torrent) => {
                 let metainfo = self.insert_torrent(torrent);
-                Manager::query_tracker(&self.tracker_args(metainfo))
+                Manager::query_tracker(self.tracker_args(metainfo))
             }
             Err(err) => Err(err),
         }
@@ -463,7 +464,7 @@ impl Manager {
             Ok(torrent) => {
                 torrent.create_files()?;
                 let metainfo = self.insert_torrent(torrent);
-                Manager::query_tracker(&self.tracker_args(metainfo))
+                Manager::query_tracker(self.tracker_args(metainfo))
             }
             Err(err) => Err(err),
         }
@@ -499,44 +500,50 @@ impl Manager {
         }
     }
 
-    fn query_tracker(args: &TrackerArgs) -> Result<(), ParseError> {
-        let mut core = Core::new()?;
-
+    fn query_tracker(args: TrackerArgs) -> Result<(), ParseError> {
         let info_hash = args.torrent.info_hash();
         let stream = Tracker::get_peers(
-            core.handle(),
             info_hash,
             args.torrent_state.peer_id,
             args.torrent.trackers(),
             args.port,
         )?;
 
-        core.run(stream.for_each(|ips| {
-            info!("Tracker response received with {} ips", ips.len());
-            for ip in ips {
-                debug!("Received IP address from tracker: {}", ip);
-                if ip.port() == args.port {
-                    warn!("Avoiding connection with self: {}", args.port);
-                    continue;
-                }
-                let channel = args.channel.clone();
+        // Need to provide a different channel to each
+        let args_future = futures::stream::iter_ok(vec![args]);
 
-                ConnectionHandler::connect(
-                    TcpStream::connect(ip),
-                    args.torrent_state.clone(),
-                    channel,
-                    Handshake::Initiator {
-                        peer_id: args.torrent_state.peer_id,
-                        info_hash: info_hash,
-                    },
-                );
-            }
-            Ok(())
-        }))
-        .map_err(|e| {
-            error!("Error while announcing to tracker: {:?}", e);
-            e
-        })
+        let future = stream
+            .zip(args_future)
+            .for_each(|(ips, _args)| {
+                info!("Tracker response received with {} ips", ips.len());
+                let info_hash = _args.torrent.info_hash();
+
+                for ip in ips {
+                    debug!("Received IP address from tracker: {}", ip);
+                    if ip.port() == _args.port {
+                        warn!("Avoiding connection with self: {}", _args.port);
+                        continue;
+                    }
+                    let channel = _args.channel.clone();
+
+                    ConnectionHandler::connect(
+                        TcpStream::connect(ip),
+                        _args.torrent_state.clone(),
+                        channel,
+                        Handshake::Initiator {
+                            peer_id: _args.torrent_state.peer_id,
+                            info_hash: info_hash,
+                        },
+                    );
+                }
+                Ok(())
+            })
+            .map_err(|e| {
+                error!("Error while announcing to tracker: {:?}", e);
+            });
+
+        tokio::run(future);
+        Ok(())
     }
 
     /* TODO: query tracker on interval
@@ -714,8 +721,11 @@ impl ConnectionHandler {
             //      - Least change from the current model, but not ideal
             // Use tokio for task management:
             // tokio::spawn(reader.for_each(|frame| {process(frame)}));
+            //      - Requires reworking how stream is initialized
             //      - Can also move channels to futures::sync::mpsc::channel
             thread::sleep(Duration::from_micros(20000));
+
+            // tokio::spawn(stream.for_each(|item| {}));
 
             // match incoming messages from the peer
             match stream.read(&mut buf) {

@@ -7,13 +7,12 @@ use byteorder::{BigEndian, ByteOrder};
 use futures::prelude::*;
 use futures::stream::Concat2;
 use futures::{Async, Future, Stream};
-use hyper::client::{FutureResponse, HttpConnector};
+use hyper::client::{HttpConnector, ResponseFuture};
 use hyper::error::Error as HyperError;
 use hyper::{Body, Chunk, Client, Response, Uri};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::ops::Try;
-use tokio_core::reactor::{Core, Handle};
 use url::form_urlencoded;
 
 #[derive(Debug, Clone)]
@@ -64,7 +63,7 @@ impl Bencodable for TrackerResponse {
     }
 
     fn to_BencodeT(self: TrackerResponse) -> BencodeT {
-        let hm = to_keys_serialize!{
+        let hm = to_keys_serialize! {
             self,
             (warning_message, OptionString),
             (interval, i64),
@@ -171,7 +170,7 @@ impl Bencodable for TrackerPeer {
                 return unsafe { BencodeT::String(String::from_utf8_unchecked(bytes.to_vec())) };
             }
             TrackerPeer::Dictionary { peer_id, ip, port } => {
-                let hm = to_keys!{
+                let hm = to_keys! {
                     (peer_id, Hash),
                     (ip, String),
                     (port, usize)
@@ -229,7 +228,7 @@ impl Serializable for str {
 }
 
 pub struct RequestStream {
-    reqs: Vec<FutureResponse>,
+    reqs: Vec<ResponseFuture>,
 }
 
 impl RequestStream {
@@ -255,8 +254,8 @@ impl Stream for RequestStream {
         let mut index = 0;
         'outer: for (i, req) in self.reqs.iter_mut().enumerate() {
             match req.poll() {
-                Ok(Async::Ready(v)) => {
-                    let mut chunk = v.body();
+                Ok(Async::Ready(mut v)) => {
+                    let mut chunk = v.body_mut();
                     // Is there a case where we have to wait here?
                     loop {
                         match chunk.poll() {
@@ -306,7 +305,6 @@ impl Tracker {
     pub fn new(url: String) {}
 
     pub fn get_peers(
-        handle: Handle,
         info_hash: Hash,
         peer_id: Hash,
         urls: Vec<String>,
@@ -328,7 +326,7 @@ impl Tracker {
             let uri: Uri = format!("{}?{}", url, query_string).parse()?;
             uris.push(uri);
         }
-        let client = Client::new(&handle);
+        let client = Client::new();
         let stream = RequestStream::new(uris, client);
         return Ok(stream);
     }
@@ -368,11 +366,14 @@ pub mod tests {
     use futures::future::{ok, Future};
     use std::thread;
     use std::time::Duration;
-    use tokio_core::reactor::{Core, Handle};
+    use tokio::run;
 
-    use hyper::header::ContentLength;
-    use hyper::server::{Http, Request, Response, Service};
-    use hyper::Error;
+    use http::{Request, Response};
+    use hyper::header::CONTENT_LENGTH;
+    use hyper::server::conn::Http;
+    use hyper::server::Server;
+    use hyper::service;
+    use hyper::Body;
 
     #[inline]
     fn place(i: usize, place: usize) -> bool {
@@ -460,45 +461,26 @@ pub mod tests {
         }
     }
 
-    #[derive(Debug, Clone)]
-    struct SimpleServer {
-        resp: Vec<u8>,
-    }
-
-    impl SimpleServer {
-        fn new<F>(make_resps: F) -> SimpleServer
-        where
-            F: Fn() -> TrackerResponse,
-        {
-            let response = make_resps();
-            SimpleServer {
-                resp: encode(&response.to_BencodeT()),
-            }
-        }
-    }
-
-    impl Service for SimpleServer {
-        type Request = Request;
-        type Response = Response;
-        type Error = Error;
-        type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
-
-        fn call(&self, _req: Request) -> Self::Future {
-            Box::new(ok(Response::new()
-                .with_header(ContentLength(self.resp.len() as u64))
-                .with_body(self.resp.clone())))
-        }
-    }
-
     pub fn run_server<F>(addr: &str, make_resps: &'static F)
     where
         F: Fn() -> TrackerResponse,
+        F: std::marker::Sync,
     {
+        let make_simple_server = move || {
+            let resps = encode(&make_resps().to_BencodeT());
+            service::service_fn_ok(move |_req| {
+                Response::builder()
+                    .header(CONTENT_LENGTH, resps.len() as u64)
+                    .body(Body::from(resps.clone()))
+                    .unwrap()
+            })
+        };
+
         let socket = addr.parse().unwrap();
-        let server = Http::new()
-            .bind(&socket, move || Ok(SimpleServer::new(make_resps)))
-            .unwrap();
-        server.run();
+        let server = Server::bind(&socket)
+            .serve(make_simple_server)
+            .map_err(|e| eprintln!("server error: {}", e));
+        hyper::rt::run(server);
         info!("Server has shut down");
     }
 
@@ -513,8 +495,6 @@ pub mod tests {
             .collect();
         let resp = make_resp();
 
-        let mut core = Core::new().unwrap();
-
         // Setup server
         let url = urls[0].clone();
         thread::spawn(move || {
@@ -522,22 +502,25 @@ pub mod tests {
         });
 
         let stream = Tracker::get_peers(
-            core.handle(),
             info_hash,
             peer_id,
             urls.into_iter()
                 .map(|url| format!("http://{}", url))
                 .collect(),
             ::PORT_NUM,
-        ).unwrap();
+        )
+        .unwrap();
 
-        let future = stream.for_each(|vec| {
-            let ips: Vec<SocketAddr> = resp.peers.iter().map(|peer| peer.ip().unwrap()).collect();
-            assert_eq!(vec, ips);
-            Ok(())
-        });
+        let future = stream
+            .for_each(move |vec| {
+                let ips: Vec<SocketAddr> =
+                    resp.peers.iter().map(|peer| peer.ip().unwrap()).collect();
+                assert_eq!(vec, ips);
+                Ok(())
+            })
+            .map_err(|e| eprintln!("server error: {}", e));
 
-        core.run(future);
+        tokio::run(future);
     }
     /*
     TODO

@@ -1,6 +1,6 @@
 use hex::{FromHex, FromHexError, ToHex};
 use hyper::error::Error as HyperError;
-use hyper::error::UriError;
+use hyper::http::uri::InvalidUri as UriError;
 use rand;
 use rand::Rng;
 use serde::{Serialize, Serializer};
@@ -69,7 +69,8 @@ fn byte_to_nibbles(byte: u8) -> (u8, u8) {
 
 impl Display for Hash {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let string: String = self.0
+        let string: String = self
+            .0
             .iter()
             .map(|x| {
                 let (b, a) = byte_to_nibbles(*x);
