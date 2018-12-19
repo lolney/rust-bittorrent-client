@@ -68,13 +68,13 @@ impl From<ParseError> for NetworkError {
 }
 
 macro_rules! acquire_torrent_lock {
-    ($state:ident, $peer:ident, $torrent:ident) => {
+    ($state:expr, $peer:expr, $torrent:ident) => {
         let mut torrents = $state.torrents.lock().expect("Torrents mutex poisoned");
         let hash = $peer.peer_info.info_hash;
-        let mut $torrent = match torrents.get_mut(&hash) {
+        let $torrent = match torrents.get_mut(&hash) {
             Some(v) => Ok(v),
             None => Err(parse_error!("Torrent has been removed ")),
-        }?;
+        };
     };
 }
 
@@ -600,6 +600,247 @@ struct ConnectionHandler {
     torrent_state: Arc<TorrentState>,
 }
 
+struct Connection {
+    peer: Peer,
+    torrent_state: Arc<TorrentState>,
+    stream: TcpStream,
+    comm: BidirectionalChannel<PeerUpdate, ManagerUpdate>,
+    download_size: u32,
+}
+
+enum StreamResult {
+    Continue,
+    End,
+}
+
+macro_rules! torrent_lock_return {
+    ($state:ident, $peer:ident, $torrent:ident) => {
+        let mut torrents = $state.torrents.lock().expect("Torrents mutex poisoned");
+        let hash = $peer.peer_info.info_hash;
+        if torrents.get_mut(&hash).is_none() {
+            warn!("Got message for deleted torrent");
+            return StreamResult::End;
+        }
+        let mut $torrent = torrents.get_mut(&hash).unwrap();
+    };
+}
+
+impl Connection {
+    /// Writes to error log and to tcpstream
+    /// Exchanges messages with the manager
+    fn receive(&mut self) -> Result<(), ParseError> {
+        let mut buf = [0; ::MSG_SIZE];
+
+        self.stream
+            .set_read_timeout(Some(Duration::new(::READ_TIMEOUT, 0)))
+            .unwrap_or_else(|e| error!("Failed to set read timeout on stream: {}", e));
+
+        self.stream
+            .set_nonblocking(true)
+            .expect("set_nonblocking call failed");
+
+        // Begin by sending our bitfield
+        {
+            acquire_torrent_lock!(self.torrent_state, self.peer, torrent);
+            match torrent {
+                Err(e) => {
+                    return Err(e);
+                }
+                Ok(torrent) => {
+                    if let Err(e) = self.stream.write(&Peer::bitfield(&torrent.bitfield())) {
+                        error!(
+                            "Error sending initial bitfield to peer {}",
+                            self.peer.peer_id()
+                        );
+                    }
+                }
+            }
+        }
+
+        loop {
+            // Alternatives:
+            // Use mio for cross-platform epoll-like scheduling
+            //      - Least change from the current model, but not ideal
+            // Use tokio for task management:
+            // tokio::spawn(reader.for_each(|frame| {process(frame)}));
+            //      - Requires reworking how stream is initialized
+            //      - Can also move channels to futures::sync::mpsc::channel
+            thread::sleep(Duration::from_micros(20000));
+
+            // tokio::spawn(stream.for_each(|item| {}));
+            // tokio::spawn(comm.for_each(|item| {}))
+
+            // match incoming messages from the peer
+            match self.stream.read(&mut buf) {
+                Err(e) => match e.kind() {
+                    ErrorKind::WouldBlock => {}
+                    _ => error!("Error while reading from stream: {}", e),
+                },
+                Ok(n) => match self.handle_read(&mut buf[0..n]) {
+                    StreamResult::Continue => {}
+                    StreamResult::End => {
+                        return Ok(());
+                    }
+                },
+            };
+
+            // match inc commands from the manager
+            match self.handle_manager_update() {
+                StreamResult::Continue => {}
+                StreamResult::End => {}
+            }
+        }
+    }
+
+    fn handle_read(&mut self, buf: &mut [u8]) -> StreamResult {
+        let peer = &mut self.peer;
+        let comm = &mut self.comm;
+        let torrent_state = &mut self.torrent_state;
+        let stream = &mut self.stream;
+        let download_size = &mut self.download_size;
+
+        match peer.parse_message(buf) {
+            Ok(action) => match action {
+                Action::EOF => {
+                    warn!(
+                        "Received empty message from {}; disconnecting",
+                        peer.peer_id()
+                    );
+                    // for each field in bitfield, update_priority by 1
+                    if peer.peer_choking {
+                        torrent_lock_return!(torrent_state, peer, torrent);
+                        ConnectionHandler::update_priority_all(&peer, &mut torrent, -1);
+                    }
+                    comm.send(PeerUpdate::Disconnect).unwrap();
+                    StreamResult::End
+                }
+                Action::Request(requests) => {
+                    info!("Fullfilling request for peer {}", peer.peer_id());
+                    torrent_lock_return!(torrent_state, peer, torrent);
+                    for req in requests {
+                        match torrent.read_block(&req) {
+                            Ok(ref pd) => {
+                                trace!("Reading piece for peer {}: {:?}", peer.peer_id(), pd);
+                                stream.write(Peer::piece(&pd).as_slice());
+                            }
+                            Err(err) => {
+                                error!(
+                                    "Error while sending block to peer {}: {}",
+                                    peer.peer_id(),
+                                    err
+                                );
+                            }
+                        }
+                    }
+                    StreamResult::Continue
+                }
+                Action::Write(piece) => {
+                    info!(
+                        "Writing piece from peer {}: {:?}",
+                        peer.peer_id(),
+                        piece.piece
+                    );
+                    *download_size = *download_size + piece.piece.length;
+                    torrent_lock_return!(torrent_state, peer, torrent);
+                    match torrent.write_block(&piece) {
+                        Ok(()) => {
+                            comm.send(PeerUpdate::Downloaded(piece.piece.index));
+                        }
+                        Err(e) => error!("Error while writing piece to file: {}", e),
+                    }
+                    StreamResult::Continue
+                }
+                Action::InterestedChange => {
+                    info!(
+                        "Peer {} interested status now: {:?}",
+                        peer.peer_id(),
+                        !peer.peer_interested
+                    );
+                    comm.send(PeerUpdate::InterestedChange);
+                    StreamResult::Continue
+                }
+                Action::ChokingChange => {
+                    info!(
+                        "Peer {} choking us now: {:?}",
+                        peer.peer_id(),
+                        peer.peer_choking
+                    );
+                    torrent_lock_return!(torrent_state, peer, torrent);
+                    if peer.peer_choking {
+                        ConnectionHandler::update_priority_all(&peer, &mut torrent, -1);
+                    } else {
+                        ConnectionHandler::update_priority_all(&peer, &mut torrent, 1);
+                    }
+                    comm.send(PeerUpdate::ChokingChange);
+                    StreamResult::Continue
+                }
+                Action::Have(index) => {
+                    if peer.peer_choking {
+                        torrent_lock_return!(torrent_state, peer, torrent);
+                        torrent.update_priority(index as usize, 1);
+                    }
+                    comm.send(PeerUpdate::Have(index));
+                    StreamResult::Continue
+                }
+                Action::Bitfield(bitfield) => {
+                    info!("Received bitfield from {}", peer.peer_id());
+                    if !peer.peer_choking {
+                        torrent_lock_return!(torrent_state, peer, torrent);
+                        ConnectionHandler::update_priority_all(&peer, &mut torrent, 1);
+                    }
+                    comm.send(PeerUpdate::Bitfield(bitfield));
+                    StreamResult::Continue
+                }
+                Action::None => StreamResult::Continue,
+            },
+            Err(e) => {
+                error!(
+                    "Error while parsing incoming message from peer {}: {}",
+                    peer.peer_id(),
+                    e
+                );
+                StreamResult::Continue
+            }
+        }
+    }
+
+    fn handle_manager_update(&mut self) -> StreamResult {
+        match self.comm.recv() {
+            ManagerUpdate::Request(req) => {
+                info!("Sending request");
+                self.stream.write(req.as_slice());
+                StreamResult::Continue
+            }
+            ManagerUpdate::Choke => {
+                if !self.peer.am_choking {
+                    info!("Choking peer {}", self.peer.peer_id());
+                    self.stream.write(self.peer.choke(true).as_slice());
+                }
+                StreamResult::Continue
+            }
+            ManagerUpdate::Unchoke => {
+                if self.peer.am_choking {
+                    info!("Unchoking peer {}", self.peer.peer_id());
+                    self.stream.write(self.peer.choke(false).as_slice());
+                }
+                StreamResult::Continue
+            }
+            ManagerUpdate::Disconnect => {
+                info!(
+                    "Disconnected from manager. Shutting down peer {}",
+                    self.peer.peer_id()
+                );
+                StreamResult::End
+            }
+            ManagerUpdate::Have(index) => {
+                self.stream.write(Peer::have(index).as_slice());
+                StreamResult::Continue
+            }
+            ManagerUpdate::None => StreamResult::Continue,
+        }
+    }
+}
+
 impl ConnectionHandler {
     /// Entry point
     pub fn connect(
@@ -688,186 +929,6 @@ impl ConnectionHandler {
         }
     }
 
-    /// Writes to error log and to tcpstream
-    /// Exchanges messages with the manager
-    fn receive(
-        mut peer: Peer,
-        mut stream: TcpStream,
-        torrent_state: Arc<TorrentState>,
-        comm: BidirectionalChannel<PeerUpdate, ManagerUpdate>,
-    ) -> Result<(), ParseError> {
-        let mut buf = [0; ::MSG_SIZE];
-        let mut download_size = 0;
-
-        stream
-            .set_read_timeout(Some(Duration::new(::READ_TIMEOUT, 0)))
-            .unwrap_or_else(|e| error!("Failed to set read timeout on stream: {}", e));
-
-        stream
-            .set_nonblocking(true)
-            .expect("set_nonblocking call failed");
-
-        // Begin by sending our bitfield
-        {
-            acquire_torrent_lock!(torrent_state, peer, torrent);
-            if let Err(e) = stream.write(&Peer::bitfield(&torrent.bitfield())) {
-                error!("Error sending initial bitfield to peer {}", peer.peer_id());
-            }
-        }
-
-        loop {
-            // Alternatives:
-            // Use mio for cross-platform epoll-like scheduling
-            //      - Least change from the current model, but not ideal
-            // Use tokio for task management:
-            // tokio::spawn(reader.for_each(|frame| {process(frame)}));
-            //      - Requires reworking how stream is initialized
-            //      - Can also move channels to futures::sync::mpsc::channel
-            thread::sleep(Duration::from_micros(20000));
-
-            // tokio::spawn(stream.for_each(|item| {}));
-
-            // match incoming messages from the peer
-            match stream.read(&mut buf) {
-                Err(e) => match e.kind() {
-                    ErrorKind::WouldBlock => {}
-                    _ => error!("Error while reading from stream: {}", e),
-                },
-                Ok(n) => match peer.parse_message(&buf[0..n]) {
-                    Ok(action) => match action {
-                        Action::EOF => {
-                            warn!(
-                                "Received empty message from {}; disconnecting",
-                                peer.peer_id()
-                            );
-                            // for each field in bitfield, update_priority by 1
-                            if peer.peer_choking {
-                                acquire_torrent_lock!(torrent_state, peer, torrent);
-                                ConnectionHandler::update_priority_all(&peer, &mut torrent, -1);
-                            }
-                            comm.send(PeerUpdate::Disconnect).unwrap();
-                            return Ok(());
-                        }
-                        Action::Request(requests) => {
-                            info!("Fullfilling request for peer {}", peer.peer_id());
-                            acquire_torrent_lock!(torrent_state, peer, torrent);
-                            for req in requests {
-                                match torrent.read_block(&req) {
-                                    Ok(ref pd) => {
-                                        trace!(
-                                            "Reading piece for peer {}: {:?}",
-                                            peer.peer_id(),
-                                            pd
-                                        );
-                                        stream.write(Peer::piece(&pd).as_slice());
-                                    }
-                                    Err(err) => {
-                                        error!(
-                                            "Error while sending block to peer {}: {}",
-                                            peer.peer_id(),
-                                            err
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        Action::Write(piece) => {
-                            info!(
-                                "Writing piece from peer {}: {:?}",
-                                peer.peer_id(),
-                                piece.piece
-                            );
-                            download_size = download_size + piece.piece.length;
-                            acquire_torrent_lock!(torrent_state, peer, torrent);
-                            match torrent.write_block(&piece) {
-                                Ok(()) => {
-                                    comm.send(PeerUpdate::Downloaded(piece.piece.index));
-                                }
-                                Err(e) => error!("Error while writing piece to file: {}", e),
-                            }
-                        }
-                        Action::InterestedChange => {
-                            info!(
-                                "Peer {} interested status now: {:?}",
-                                peer.peer_id(),
-                                !peer.peer_interested
-                            );
-                            comm.send(PeerUpdate::InterestedChange);
-                        }
-                        Action::ChokingChange => {
-                            info!(
-                                "Peer {} choking us now: {:?}",
-                                peer.peer_id(),
-                                peer.peer_choking
-                            );
-                            acquire_torrent_lock!(torrent_state, peer, torrent);
-                            if peer.peer_choking {
-                                ConnectionHandler::update_priority_all(&peer, &mut torrent, -1);
-                            } else {
-                                ConnectionHandler::update_priority_all(&peer, &mut torrent, 1);
-                            }
-                            comm.send(PeerUpdate::ChokingChange);
-                        }
-                        Action::Have(index) => {
-                            if peer.peer_choking {
-                                acquire_torrent_lock!(torrent_state, peer, torrent);
-                                torrent.update_priority(index as usize, 1);
-                            }
-                            comm.send(PeerUpdate::Have(index));
-                        }
-                        Action::Bitfield(bitfield) => {
-                            info!("Received bitfield from {}", peer.peer_id());
-                            if !peer.peer_choking {
-                                acquire_torrent_lock!(torrent_state, peer, torrent);
-                                ConnectionHandler::update_priority_all(&peer, &mut torrent, 1);
-                            }
-                            comm.send(PeerUpdate::Bitfield(bitfield));
-                        }
-                        Action::None => {}
-                    },
-                    Err(e) => {
-                        error!(
-                            "Error while parsing incoming message from peer {}: {}",
-                            peer.peer_id(),
-                            e
-                        );
-                    }
-                },
-            };
-
-            // match inc commands from the manager
-            match comm.recv() {
-                ManagerUpdate::Request(req) => {
-                    info!("Sending request");
-                    stream.write(req.as_slice());
-                }
-                ManagerUpdate::Choke => {
-                    if !peer.am_choking {
-                        info!("Choking peer {}", peer.peer_id());
-                        stream.write(peer.choke(true).as_slice());
-                    }
-                }
-                ManagerUpdate::Unchoke => {
-                    if peer.am_choking {
-                        info!("Unchoking peer {}", peer.peer_id());
-                        stream.write(peer.choke(false).as_slice());
-                    }
-                }
-                ManagerUpdate::Disconnect => {
-                    info!(
-                        "Disconnected from manager. Shutting down peer {}",
-                        peer.peer_id()
-                    );
-                    return Ok(());
-                }
-                ManagerUpdate::Have(index) => {
-                    stream.write(Peer::have(index).as_slice());
-                }
-                ManagerUpdate::None => {}
-            }
-        }
-    }
-
     fn register_peer(
         &self,
         peer: &Peer,
@@ -912,14 +973,18 @@ impl ConnectionHandler {
                             info!("New peer connected: {}", peer.peer_id());
                             let peer_comm = self.register_peer(&peer, &manager_send);
                             let torrent_state = self.torrent_state.clone();
+                            // TODO: should be tokio::spawn,
+                            // but requires this to be a future
                             thread::spawn(move || {
                                 // manages new connection
-                                if let Err(e) = ConnectionHandler::receive(
-                                    peer,
-                                    stream,
-                                    torrent_state,
-                                    peer_comm,
-                                ) {
+                                let mut connection = Connection {
+                                    peer: peer,
+                                    torrent_state: torrent_state,
+                                    stream: stream,
+                                    comm: peer_comm,
+                                    download_size: 0,
+                                };
+                                if let Err(e) = connection.receive() {
                                     warn!("Peer shut down with error: {}", e);
                                 }
                             });
