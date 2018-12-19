@@ -202,7 +202,7 @@ impl Torrent {
                 }
             };
             fp.seek(SeekFrom::Start(file.begin as u64))?;
-            fp.write_all(piece.data.as_slice());
+            fp.write_all(piece.data.as_slice())?;
         }
 
         self.insert_piece(&piece.piece);
@@ -237,7 +237,7 @@ impl Torrent {
             let mut fp = File::open(file.path.clone())?;
 
             fp.seek(SeekFrom::Start(file.begin as u64))?;
-            fp.read_exact(buf.as_mut_slice());
+            fp.read_exact(buf.as_mut_slice())?;
             vec.extend_from_slice(buf.as_slice());
         }
 
@@ -409,7 +409,8 @@ impl Torrent {
             if remaining == 0 {
                 break;
             }
-            file = iter.next()
+            file = iter
+                .next()
                 .expect("Piece length requested was longer than expected");
         }
 
@@ -621,7 +622,7 @@ mod tests {
     #[test]
     fn test_create_files() {
         let download_dir = format!("{}/{}", ::DL_DIR, "test_create_files");
-        remove_dir_all(PathBuf::from(download_dir.clone()));
+        remove_dir_all(PathBuf::from(download_dir.clone())).unwrap();
         let mut fnames = vec!["test/torrent.torrent", ::TEST_FILE];
         let test_files = fnames
             .iter_mut()
@@ -644,8 +645,9 @@ mod tests {
             data: bytes[20..40].to_vec(),
         };
 
-        torrent.write_block_raw(&p2);
-        torrent.write_block_raw(&p1);
+        torrent.write_block_raw(&p2).unwrap();
+        torrent.write_block_raw(&p1).unwrap();
+
         let p1_2: PieceData = torrent.read_block_raw(&p1.piece).unwrap();
         let p2_2: PieceData = torrent.read_block_raw(&p2.piece).unwrap();
 

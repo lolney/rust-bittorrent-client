@@ -2,7 +2,6 @@ use bit_vec::BitVec;
 use bittorrent::{Hash, ParseError, Piece, PieceData};
 use byteorder::BigEndian;
 use byteorder::ByteOrder;
-use std::error::Error;
 use std::mem::transmute;
 use std::str::from_utf8;
 
@@ -299,7 +298,7 @@ impl Peer {
 
     pub fn choke(&mut self, choke: bool) -> Vec<u8> {
         self.am_choking = choke;
-        if (choke) {
+        if choke {
             message!(1u32, 0u8)
         } else {
             message!(1u32, 1u8)
@@ -308,7 +307,7 @@ impl Peer {
 
     pub fn interested(&mut self, interested: bool) -> Vec<u8> {
         self.am_interested = interested;
-        if (interested) {
+        if interested {
             message!(1u32, 2u8)
         } else {
             message!(1u32, 3u8)
@@ -357,7 +356,7 @@ impl Peer {
         let mut i = 0;
 
         // check message size
-        if (msg.len() < ::HSLEN) {
+        if msg.len() < ::HSLEN {
             return Err(parse_error!("Unexpected handshake length: {}", msg.len()));
         }
 
@@ -405,20 +404,29 @@ mod tests {
 
     use bit_vec::BitVec;
     use bittorrent::peer::*;
-    use bittorrent::{ParseError, Piece, PieceData};
+    use bittorrent::{Piece, PieceData};
+    use std::error::Error;
     use std::mem::transmute;
 
     #[test]
     fn test_simple_messages() {
         let mut peer = Peer::new(PeerInfo::new(), 1);
 
-        let keep_alive = [0u32];
         let choke = message!(1u32, 0u8);
         let unchoke = message!(1u32, 1u8);
         let interested = message!(1u32, 2u8);
         let not_interested = message!(1u32, 3u8);
 
-        peer.parse_message(&choke);
+        // keep_alive
+        assert_eq!(peer.parse_message(&[]).unwrap(), Action::EOF);
+
+        // unchoke
+        assert_eq!(peer.parse_message(&unchoke).unwrap(), Action::ChokingChange);
+        assert_eq!(peer.peer_choking, false);
+        assert_eq!(peer.choke(false), unchoke);
+
+        // choke
+        assert_eq!(peer.parse_message(&choke).unwrap(), Action::ChokingChange);
         assert_eq!(peer.peer_choking, true);
         assert_eq!(peer.choke(true), choke);
         assert_eq!(
@@ -426,15 +434,19 @@ mod tests {
             &[0b00000000, 0b00000000, 0b00000000, 0b00000001, 0b000000000]
         );
 
-        peer.parse_message(&unchoke);
-        assert_eq!(peer.peer_choking, false);
-        assert_eq!(peer.choke(false), unchoke);
-
-        peer.parse_message(&interested);
+        // interested
+        assert_eq!(
+            peer.parse_message(&interested).unwrap(),
+            Action::InterestedChange
+        );
         assert_eq!(peer.peer_interested, true);
         assert_eq!(peer.interested(true), interested);
 
-        peer.parse_message(&not_interested);
+        // not interested
+        assert_eq!(
+            peer.parse_message(&not_interested).unwrap(),
+            Action::InterestedChange
+        );
         assert_eq!(peer.peer_interested, false);
         assert_eq!(peer.interested(false), not_interested);
     }
@@ -486,7 +498,7 @@ mod tests {
 
         assert_eq!(peer.bitfield.get(7).unwrap(), false);
         let have = message!(5u32, 4u8, 7u32);
-        peer.parse_message(&have);
+        peer.parse_message(&have).unwrap();
         assert_eq!(peer.bitfield.get(7).unwrap(), true);
     }
 

@@ -22,7 +22,7 @@ use std::sync::mpsc::SendError;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std::usize::MAX;
 use tokio;
 

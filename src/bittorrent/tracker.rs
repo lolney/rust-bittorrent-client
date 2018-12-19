@@ -1,18 +1,15 @@
 /* Tracker communication handled here
 */
 use bittorrent::bedecoder::parse;
-use bittorrent::peer::{Peer, PeerInfo};
+use bittorrent::peer::Peer;
 use bittorrent::{Bencodable, BencodeT, Hash, Keys, ParseError};
 use byteorder::{BigEndian, ByteOrder};
 use futures::prelude::*;
-use futures::stream::Concat2;
 use futures::{Async, Future, Stream};
 use hyper::client::{HttpConnector, ResponseFuture};
-use hyper::error::Error as HyperError;
-use hyper::{Body, Chunk, Client, Response, Uri};
+use hyper::{Chunk, Client, Uri};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::ops::Try;
 use url::form_urlencoded;
 
 #[derive(Debug, Clone)]
@@ -37,7 +34,7 @@ pub struct TrackerResponse {
 }
 
 impl Bencodable for TrackerResponse {
-    fn from_BencodeT(bencode_t: &BencodeT) -> Result<TrackerResponse, ParseError> {
+    fn from_bencode_t(bencode_t: &BencodeT) -> Result<TrackerResponse, ParseError> {
         match bencode_t {
             &BencodeT::Dictionary(ref hm) => {
                 if let Some(val) = hm.get("failure reason") {
@@ -62,7 +59,7 @@ impl Bencodable for TrackerResponse {
         }
     }
 
-    fn to_BencodeT(self: TrackerResponse) -> BencodeT {
+    fn to_bencode_t(self: TrackerResponse) -> BencodeT {
         let hm = to_keys_serialize! {
             self,
             (warning_message, OptionString),
@@ -163,7 +160,7 @@ type VecTrackerPeer = Vec<TrackerPeer>;
 impl Bencodable for TrackerPeer {
     /// Note: expects input to be properly formatted, since only used to serialize
     /// already sanitized or internally created data
-    fn to_BencodeT(self) -> BencodeT {
+    fn to_bencode_t(self) -> BencodeT {
         match self {
             TrackerPeer::Binary { ref ip, port } => {
                 let bytes = TrackerPeer::to_binary(ip, port);
@@ -179,7 +176,7 @@ impl Bencodable for TrackerPeer {
             }
         }
     }
-    fn from_BencodeT(bencode_t: &BencodeT) -> Result<TrackerPeer, ParseError> {
+    fn from_bencode_t(bencode_t: &BencodeT) -> Result<TrackerPeer, ParseError> {
         match bencode_t {
             &BencodeT::String(ref string) => Ok(TrackerPeer::from_binary(string.as_bytes())?),
             &BencodeT::Dictionary(ref hm) => Ok(get_keys_enum!(
@@ -333,7 +330,7 @@ impl Tracker {
 
     fn parse_response(body: &[u8]) -> Result<Vec<TrackerPeer>, ParseError> {
         let bencodet = parse(body)?;
-        let response = TrackerResponse::from_BencodeT(&bencodet)?;
+        let response = TrackerResponse::from_bencode_t(&bencodet)?;
         return Ok(response.peers);
     }
 
@@ -439,7 +436,7 @@ pub mod tests {
         for resp in (0..8).map(|i| make_resps(i)) {
             assert_eq!(
                 resp,
-                TrackerResponse::from_BencodeT(&TrackerResponse::to_BencodeT(resp.clone()))
+                TrackerResponse::from_bencode_t(&TrackerResponse::to_bencode_t(resp.clone()))
                     .unwrap()
             );
         }
@@ -467,7 +464,7 @@ pub mod tests {
         F: std::marker::Sync,
     {
         let make_simple_server = move || {
-            let resps = encode(&make_resps().to_BencodeT());
+            let resps = encode(&make_resps().to_bencode_t());
             service::service_fn_ok(move |_req| {
                 Response::builder()
                     .header(CONTENT_LENGTH, resps.len() as u64)

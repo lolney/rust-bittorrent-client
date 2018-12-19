@@ -2,10 +2,8 @@
 //#![plugin(peg_syntax_ext)]
 //#![feature(inclusive_range_syntax)]
 #![feature(vec_remove_item)]
-#![feature(use_extern_macros)]
-#![feature(iterator_try_fold)]
 #![feature(try_trait)]
-#![feature(proc_macro, conservative_impl_trait, generators)]
+#![feature(proc_macro, generators)]
 #![allow(dead_code)]
 
 extern crate bit_vec;
@@ -19,8 +17,8 @@ extern crate rand;
 extern crate sha1;
 
 extern crate futures;
-extern crate hyper;
 extern crate http;
+extern crate hyper;
 extern crate tokio;
 extern crate tokio_timer;
 extern crate url;

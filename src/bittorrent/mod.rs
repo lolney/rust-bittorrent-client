@@ -217,7 +217,7 @@ pub trait Keys<T: Bencodable> {
 impl<T: Bencodable> Keys<T> for Option<T> {
     fn keys<'a>(opt: Option<&'a BencodeT>) -> Result<Option<T>, ParseError> {
         if opt.is_some() {
-            Ok(Some(T::from_BencodeT(opt.unwrap())?))
+            Ok(Some(T::from_bencode_t(opt.unwrap())?))
         } else {
             Ok(None)
         }
@@ -229,7 +229,7 @@ impl<T: Bencodable> Keys<T> for Option<T> {
 
 impl<T: Bencodable> Keys<T> for T {
     fn keys<'a>(opt: Option<&'a BencodeT>) -> Result<Self, ParseError> {
-        T::from_BencodeT(opt.unwrap())
+        T::from_bencode_t(opt.unwrap())
     }
     fn to_value(self) -> Option<T> {
         Some(self)
@@ -271,7 +271,7 @@ macro_rules! to_keys {
             let mut hm = HashMap::new();
             $(
                 if let Some(v) = $key.to_value() {
-                    hm.insert(mod_stringify!($key).to_string(), v.to_BencodeT());
+                    hm.insert(mod_stringify!($key).to_string(), v.to_bencode_t());
                 }
 
             )*
@@ -287,7 +287,7 @@ macro_rules! to_keys_serialize {
             let mut hm = HashMap::new();
             $(
                 if let Some(v) = $struct.$key.clone().to_value() {
-                    hm.insert(mod_stringify!($key).to_string(), v.to_BencodeT());
+                    hm.insert(mod_stringify!($key).to_string(), v.to_bencode_t());
                 }
 
             )*
@@ -299,18 +299,18 @@ macro_rules! to_keys_serialize {
 /// Represents a type that can be serialized by bencoding
 pub trait Bencodable: Clone {
     /// Converts self to a BencodeT object
-    fn to_BencodeT(self) -> BencodeT;
+    fn to_bencode_t(self) -> BencodeT;
     /// Converts a BencodeT object to Self
-    fn from_BencodeT(bencode_t: &BencodeT) -> Result<Self, ParseError>
+    fn from_bencode_t(bencode_t: &BencodeT) -> Result<Self, ParseError>
     where
         Self: Sized;
 }
 
 impl Bencodable for String {
-    fn to_BencodeT(self) -> BencodeT {
+    fn to_bencode_t(self) -> BencodeT {
         BencodeT::String(self)
     }
-    fn from_BencodeT(bencode_t: &BencodeT) -> Result<String, ParseError> {
+    fn from_bencode_t(bencode_t: &BencodeT) -> Result<String, ParseError> {
         match bencode_t {
             &BencodeT::String(ref string) => Ok(string.clone()),
             &BencodeT::Integer(int) => Err(parse_error!(
@@ -333,10 +333,10 @@ impl Bencodable for String {
 }
 
 impl Bencodable for Hash {
-    fn to_BencodeT(self) -> BencodeT {
+    fn to_bencode_t(self) -> BencodeT {
         return BencodeT::ByteString(self.0.to_vec());
     }
-    fn from_BencodeT(bencode_t: &BencodeT) -> Result<Hash, ParseError> {
+    fn from_bencode_t(bencode_t: &BencodeT) -> Result<Hash, ParseError> {
         match bencode_t {
             &BencodeT::ByteString(ref vec) => {
                 let mut a: Hash = Default::default();
@@ -352,10 +352,10 @@ impl Bencodable for Hash {
 }
 
 impl Bencodable for HashMap<String, BencodeT> {
-    fn to_BencodeT(self) -> BencodeT {
+    fn to_bencode_t(self) -> BencodeT {
         BencodeT::Dictionary(self)
     }
-    fn from_BencodeT(bencode_t: &BencodeT) -> Result<HashMap<String, BencodeT>, ParseError> {
+    fn from_bencode_t(bencode_t: &BencodeT) -> Result<HashMap<String, BencodeT>, ParseError> {
         match bencode_t {
             &BencodeT::Dictionary(ref hm) => Ok(hm.clone()),
             _ => Err(ParseError::new_str(
@@ -366,10 +366,10 @@ impl Bencodable for HashMap<String, BencodeT> {
 }
 
 impl Bencodable for Vec<u8> {
-    fn to_BencodeT(self) -> BencodeT {
+    fn to_bencode_t(self) -> BencodeT {
         BencodeT::ByteString(self)
     }
-    fn from_BencodeT(bencode_t: &BencodeT) -> Result<Vec<u8>, ParseError> {
+    fn from_bencode_t(bencode_t: &BencodeT) -> Result<Vec<u8>, ParseError> {
         match bencode_t {
             &BencodeT::ByteString(ref list) => Ok(list.clone()),
             _ => Err(ParseError::new_str(
@@ -380,10 +380,10 @@ impl Bencodable for Vec<u8> {
 }
 
 impl Bencodable for Vec<BencodeT> {
-    fn to_BencodeT(self) -> BencodeT {
+    fn to_bencode_t(self) -> BencodeT {
         BencodeT::List(self)
     }
-    fn from_BencodeT(bencode_t: &BencodeT) -> Result<Vec<BencodeT>, ParseError> {
+    fn from_bencode_t(bencode_t: &BencodeT) -> Result<Vec<BencodeT>, ParseError> {
         match bencode_t {
             &BencodeT::List(ref list) => Ok(list.clone()),
             _ => Err(ParseError::new_str(
@@ -394,15 +394,15 @@ impl Bencodable for Vec<BencodeT> {
 }
 
 impl<T: Bencodable> Bencodable for Vec<T> {
-    fn to_BencodeT(self) -> BencodeT {
-        BencodeT::List(self.into_iter().map(|x| x.to_BencodeT()).collect())
+    fn to_bencode_t(self) -> BencodeT {
+        BencodeT::List(self.into_iter().map(|x| x.to_bencode_t()).collect())
     }
-    fn from_BencodeT(bencode_t: &BencodeT) -> Result<Vec<T>, ParseError> {
+    fn from_bencode_t(bencode_t: &BencodeT) -> Result<Vec<T>, ParseError> {
         match bencode_t {
             &BencodeT::List(ref list) => {
                 let mut vec = Vec::new();
                 for elem in list {
-                    vec.push(T::from_BencodeT(elem)?);
+                    vec.push(T::from_bencode_t(elem)?);
                 }
                 Ok(vec)
             }
@@ -414,10 +414,10 @@ impl<T: Bencodable> Bencodable for Vec<T> {
 }
 
 impl Bencodable for i64 {
-    fn to_BencodeT(self) -> BencodeT {
+    fn to_bencode_t(self) -> BencodeT {
         BencodeT::Integer(self)
     }
-    fn from_BencodeT(bencode_t: &BencodeT) -> Result<i64, ParseError> {
+    fn from_bencode_t(bencode_t: &BencodeT) -> Result<i64, ParseError> {
         match bencode_t {
             &BencodeT::Integer(ref i) => Ok(i.clone()),
             _ => Err(ParseError::new_str(
@@ -428,10 +428,10 @@ impl Bencodable for i64 {
 }
 
 impl Bencodable for usize {
-    fn to_BencodeT(self) -> BencodeT {
+    fn to_bencode_t(self) -> BencodeT {
         BencodeT::Integer(self as i64)
     }
-    fn from_BencodeT(bencode_t: &BencodeT) -> Result<usize, ParseError> {
+    fn from_bencode_t(bencode_t: &BencodeT) -> Result<usize, ParseError> {
         match bencode_t {
             &BencodeT::Integer(ref i) => {
                 if *i < 0 {
@@ -450,10 +450,10 @@ impl Bencodable for usize {
 }
 
 impl Bencodable for u32 {
-    fn to_BencodeT(self) -> BencodeT {
+    fn to_bencode_t(self) -> BencodeT {
         BencodeT::Integer(self as i64)
     }
-    fn from_BencodeT(bencode_t: &BencodeT) -> Result<u32, ParseError> {
+    fn from_bencode_t(bencode_t: &BencodeT) -> Result<u32, ParseError> {
         match bencode_t {
             &BencodeT::Integer(ref i) => {
                 if *i < 0 {
@@ -476,10 +476,10 @@ impl Bencodable for u32 {
 }
 
 impl Bencodable for bool {
-    fn to_BencodeT(self) -> BencodeT {
+    fn to_bencode_t(self) -> BencodeT {
         BencodeT::Integer(self as i64)
     }
-    fn from_BencodeT(bencode_t: &BencodeT) -> Result<bool, ParseError> {
+    fn from_bencode_t(bencode_t: &BencodeT) -> Result<bool, ParseError> {
         match bencode_t {
             &BencodeT::Integer(ref i) => {
                 if *i == 0 {

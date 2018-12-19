@@ -31,7 +31,7 @@ type EmptyResult = Result<(), ClientError>;
 
 macro_rules! get_mutex {
     ($mutex:ident) => {
-        ($mutex.lock().expect("State mutex poisoned"))
+        $mutex.lock().expect("State mutex poisoned")
     };
 }
 
@@ -49,19 +49,19 @@ fn torrent(info_hash: String, mutex: WrappedState) -> CustomResult {
 
 #[post("/torrents/<info_hash>/pause")]
 fn pause(info_hash: String, mutex: WrappedState) -> CustomResult {
-    let mut state = get_mutex!(mutex);
+    let state = get_mutex!(mutex);
     CustomResult::from(state.pause(info_hash))
 }
 
 #[post("/torrents/<info_hash>/resume")]
 fn resume(info_hash: String, mutex: WrappedState) -> CustomResult {
-    let mut state = get_mutex!(mutex);
+    let state = get_mutex!(mutex);
     CustomResult::from(state.resume(info_hash))
 }
 
 #[delete("/torrents/<info_hash>")]
 fn remove(info_hash: String, mutex: WrappedState) -> CustomResult {
-    let mut state = get_mutex!(mutex);
+    let state = get_mutex!(mutex);
     CustomResult::from(state.remove(info_hash))
 }
 
@@ -72,7 +72,7 @@ fn add(metainfo_path: String, download_path: String, mutex: WrappedState) -> Cus
 }
 
 fn rocket() -> Rocket {
-    let (allowed_origins, failed_origins) =
+    let (allowed_origins, _failed_origins) =
         AllowedOrigins::some(&["null", "http://localhost:8080"]);
 
     let options = rocket_cors::Cors {

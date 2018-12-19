@@ -70,19 +70,19 @@ impl TorrentState for StaticTorrentState {
         Ok(())
     }
 
-    fn add(&mut self, metainfo_path: String, download_path: String) -> Result<(), ClientError> {
+    fn add(&mut self, _metainfo_path: String, _download_path: String) -> Result<(), ClientError> {
         Ok(())
     }
 
-    fn remove(&self, info_hash: String) -> Result<(), ClientError> {
+    fn remove(&self, _info_hash: String) -> Result<(), ClientError> {
         Ok(())
     }
 
-    fn pause(&self, info_hash: String) -> Result<(), ClientError> {
+    fn pause(&self, _info_hash: String) -> Result<(), ClientError> {
         Ok(())
     }
 
-    fn resume(&self, info_hash: String) -> Result<(), ClientError> {
+    fn resume(&self, _info_hash: String) -> Result<(), ClientError> {
         Ok(())
     }
 }

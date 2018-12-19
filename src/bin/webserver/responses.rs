@@ -33,7 +33,7 @@ impl From<StdResult<JsonValue, ClientError>> for Result {
 }
 
 impl<'r> Responder<'r> for ClientError {
-    fn respond_to(self, req: &Request) -> RocketResult<'r> {
+    fn respond_to(self, _req: &Request) -> RocketResult<'r> {
         match self {
             ClientError::NotFound => Response::build()
                 .status(Status::NotFound)

@@ -1,17 +1,14 @@
+use bittorrent::bittorrent::manager::Manager;
+use cursive::traits::*;
+use cursive::views::Counter;
+use cursive::views::{Button, Dialog, DummyView, LinearLayout, ProgressBar, TextView};
 use cursive::Cursive;
-use cursive::views::{Button, Dialog, DummyView, LinearLayout, ListView, ProgressBar, TextView};
-use cursive::With;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::thread;
 use std::time::Duration;
-use cursive::views::Counter;
-use cursive_table_view::{TableView, TableViewItem};
-use rand::{thread_rng, Rng};
 use table;
 use table::AsyncTableView;
-use bittorrent::bittorrent::manager::Manager;
-use std::rc::Rc;
-use std::cell::RefCell;
-use cursive::traits::*;
 
 pub struct Client {
     curs: Cursive,
@@ -48,7 +45,7 @@ fn progress(curs: &Cursive) -> ProgressBar {
 
             // When we're done, send a callback through the channel
             cb.send(Box::new(push_dialog)).unwrap();
-    });
+        });
 }
 
 pub fn run() {
@@ -71,7 +68,8 @@ pub fn run() {
             LinearLayout::vertical()
                 .child(async_table.with_id("table").min_size((50, 20)))
                 .child(actions),
-        ).title("Active Torrents"),
+        )
+        .title("Active Torrents"),
     );
 
     // Starts the event loop.
